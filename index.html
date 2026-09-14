@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TABDIL - تبدیل عکس به اکسل و متن</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      fontFamily: { vazir: ['Vazirmatn','Tahoma','sans-serif'] }
+    }
+  }
+}
+</script>
+<style>
+* { font-family: 'Vazirmatn', Tahoma, sans-serif; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 10px; }
+::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: #64748b; }
+.drag-active { border-color: #3b82f6 !important; background: #eff6ff !important; }
+</style>
+</head>
+<body class="bg-[#f8fafc] min-h-screen vazir">
+<!-- Header -->
+<header class="bg-white border-b border-slate-200 sticky top-0 z-40">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl flex items-center justify-center text-white text-xl"><i class="fa-solid fa-table-columns"></i></div>
+      <div>
+        <h1 class="text-lg font-bold text-slate-800 leading-none">TABDIL</h1>
+        <p class="text-xs text-slate-500">تبدیل هوشمند عکس به اکسل</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="hidden sm:inline text-xs bg-slate-100 text-slate-600 px-3 py-1.5 rounded-full">هر عکس = یک شیت</span>
+      <a href="download.xlsx" download class="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-full hover:bg-black transition">نمونه آماده <i class="fa-solid fa-download mr-1"></i></a>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+  <!-- Hero -->
+  <div class="text-center mb-8">
+    <h2 class="text-2xl sm:text-3xl font-bold text-slate-900 mb-2">عکس جدولت رو بده، <span class="text-blue-600">اکسل تحویل بگیر</span></h2>
+    <p class="text-sm text-slate-500 max-w-2xl mx-auto">عکس جدول تایپی، فاکتور، لیست قطعات یا هر جدول چاپی رو آپلود کن. متن به صورت خودکار استخراج میشه و با فرمت دلخواهت (اکسل، CSV، JSON، TXT) دانلود کن. هر عکس یک شیت جداگانه.</p>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Left: Upload & Settings -->
+    <div class="lg:col-span-1 space-y-4">
+      <!-- Upload Area -->
+      <div id="dropZone" class="bg-white rounded-2xl border-2 border-dashed border-slate-300 p-6 text-center hover:border-blue-400 transition cursor-pointer group">
+        <div class="w-14 h-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-3 group-hover:bg-blue-600 group-hover:text-white transition">
+          <i class="fa-solid fa-cloud-arrow-up text-xl"></i>
+        </div>
+        <p class="font-semibold text-slate-800 text-sm">عکس‌ها را اینجا رها کنید</p>
+        <p class="text-xs text-slate-400 mt-1">یا کلیک کنید تا انتخاب کنید</p>
+        <p class="text-[11px] text-slate-400 mt-2">JPG, PNG, WEBP, TIFF - چند فایل همزمان</p>
+        <input type="file" id="fileInput" accept="image/*" multiple hidden>
+        <button onclick="document.getElementById('fileInput').click()" class="mt-4 w-full bg-slate-900 text-white py-2.5 rounded-xl text-sm font-medium hover:bg-black transition">انتخاب عکس‌ها</button>
+        <label class="flex items-center justify-center gap-2 mt-3 text-xs text-slate-500 cursor-pointer">
+          <input type="checkbox" id="multiSheet" checked class="rounded"> هر عکس یک شیت جداگانه
+        </label>
+      </div>
+
+      <!-- File List -->
+      <div id="fileList" class="space-y-2 hidden">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-semibold text-slate-700">فایل‌های انتخاب‌شده (<span id="fileCount">0</span>)</h3>
+          <button onclick="clearFiles()" class="text-xs text-red-500 hover:text-red-700">پاک کردن همه</button>
+        </div>
+        <div id="filePreview" class="space-y-2 max-h-[320px] overflow-y-auto pr-1"></div>
+      </div>
+
+      <!-- Settings -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-5">
+        <h3 class="font-semibold text-slate-800 text-sm mb-3 flex items-center gap-2"><i class="fa-solid fa-sliders text-slate-400"></i> تنظیمات خروجی</h3>
+        
+        <label class="text-xs font-medium text-slate-600 mb-1.5 block">فرمت خروجی</label>
+        <div class="grid grid-cols-2 gap-2 mb-4">
+          <label class="format-option cursor-pointer">
+            <input type="radio" name="format" value="xlsx" checked class="hidden peer">
+            <div class="peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 bg-white border border-slate-200 rounded-xl p-3 text-center hover:border-blue-300 transition">
+              <i class="fa-solid fa-file-excel block text-lg mb-1"></i>
+              <div class="text-xs font-semibold">Excel</div>
+              <div class="text-[10px] opacity-70">.xlsx</div>
+            </div>
+          </label>
+          <label class="format-option cursor-pointer">
+            <input type="radio" name="format" value="csv" class="hidden peer">
+            <div class="peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 bg-white border border-slate-200 rounded-xl p-3 text-center hover:border-blue-300 transition">
+              <i class="fa-solid fa-file-csv block text-lg mb-1"></i>
+              <div class="text-xs font-semibold">CSV</div>
+              <div class="text-[10px] opacity-70">.zip</div>
+            </div>
+          </label>
+          <label class="format-option cursor-pointer">
+            <input type="radio" name="format" value="json" class="hidden peer">
+            <div class="peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 bg-white border border-slate-200 rounded-xl p-3 text-center hover:border-blue-300 transition">
+              <i class="fa-solid fa-file-code block text-lg mb-1"></i>
+              <div class="text-xs font-semibold">JSON</div>
+              <div class="text-[10px] opacity-70">.json</div>
+            </div>
+          </label>
+          <label class="format-option cursor-pointer">
+            <input type="radio" name="format" value="txt" class="hidden peer">
+            <div class="peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 bg-white border border-slate-200 rounded-xl p-3 text-center hover:border-blue-300 transition">
+              <i class="fa-solid fa-file-lines block text-lg mb-1"></i>
+              <div class="text-xs font-semibold">TXT</div>
+              <div class="text-[10px] opacity-70">.txt</div>
+            </div>
+          </label>
+        </div>
+
+        <label class="text-xs font-medium text-slate-600 mb-1.5 block">زبان تشخیص متن</label>
+        <select id="langSelect" class="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+          <option value="fas+eng" selected>فارسی + انگلیسی (پیشنهادی)</option>
+          <option value="fas">فقط فارسی</option>
+          <option value="eng">فقط انگلیسی</option>
+          <option value="fas+eng+osd">فارسی + انگلیسی + خودکار</option>
+        </select>
+
+        <label class="text-xs font-medium text-slate-600 mt-3 mb-1.5 block">نحوه تشخیص جدول</label>
+        <select id="tableMode" class="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="auto" selected>خودکار - تشخیص هوشمند ستون‌ها</option>
+          <option value="lines">هر خط = یک ردیف</option>
+          <option value="manual">جدول دستی (قابل ویرایش)</option>
+        </select>
+
+        <div class="flex items-center gap-2 mt-3">
+          <input type="checkbox" id="enhance" checked class="rounded text-blue-600">
+          <label for="enhance" class="text-xs text-slate-600">بهبود کیفیت عکس قبل از تشخیص</label>
+        </div>
+
+        <button id="convertBtn" onclick="startConvert()" disabled class="w-full mt-4 bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-3 rounded-xl font-semibold text-sm hover:from-blue-700 hover:to-indigo-700 transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+          <i class="fa-solid fa-wand-magic-sparkles"></i> تبدیل و دانلود
+        </button>
+        <p class="text-[11px] text-slate-400 text-center mt-2">پردازش کاملاً در مرورگر شما انجام می‌شود - فایل‌ها آپلود نمی‌شوند</p>
+      </div>
+
+      <!-- Tips -->
+      <div class="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+        <p class="text-xs font-semibold text-amber-800 flex items-center gap-1.5"><i class="fa-solid fa-lightbulb"></i> نکته برای نتیجه بهتر</p>
+        <ul class="text-[11px] text-amber-700 mt-2 space-y-1 list-disc list-inside leading-relaxed">
+          <li>عکس را صاف و با نور کافی بگیرید</li>
+          <li>جدول کامل در کادر باشد، کج نباشد</li>
+          <li>اگر متن فارسی است، زبان «فارسی+انگلیسی» بگذارید</li>
+          <li>بعد از تشخیص، جدول قابل ویرایش است</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Right: Preview & Results -->
+    <div class="lg:col-span-2 space-y-4">
+      <!-- Progress -->
+      <div id="progressCard" class="bg-white rounded-2xl border border-slate-200 p-5 hidden">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-semibold text-slate-700">در حال پردازش...</span>
+          <span id="progressText" class="text-xs text-slate-500">0%</span>
+        </div>
+        <div class="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+          <div id="progressBar" class="h-2 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full transition-all duration-300" style="width:0%"></div>
+        </div>
+        <p id="progressDetail" class="text-[11px] text-slate-500 mt-2">آماده‌سازی...</p>
+      </div>
+
+      <!-- Results -->
+      <div id="resultsCard" class="bg-white rounded-2xl border border-slate-200 hidden">
+        <div class="p-5 border-b border-slate-100 flex items-center justify-between">
+          <h3 class="font-semibold text-slate-800 text-sm flex items-center gap-2"><i class="fa-solid fa-table text-blue-500"></i> نتیجه تشخیص - قابل ویرایش</h3>
+          <div class="flex items-center gap-2">
+            <span id="resultCount" class="text-xs bg-slate-100 px-2 py-1 rounded-full text-slate-600">0 شیت</span>
+            <button onclick="downloadAgain()" class="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-lg hover:bg-black">دانلود مجدد</button>
+          </div>
+        </div>
+        <div id="resultsTabs" class="flex gap-1 p-2 bg-slate-50 border-b border-slate-200 overflow-x-auto"></div>
+        <div id="resultsContent" class="p-0 max-h-[520px] overflow-auto"></div>
+        <div class="p-3 bg-slate-50 rounded-b-2xl flex gap-2">
+          <button onclick="addRow()" class="text-xs bg-white border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-50"><i class="fa-solid fa-plus ml-1"></i> افزودن ردیف</button>
+          <button onclick="addColumn()" class="text-xs bg-white border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-50"><i class="fa-solid fa-plus ml-1"></i> افزودن ستون</button>
+          <div class="flex-1"></div>
+          <button onclick="downloadAgain()" class="text-xs bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700 font-medium">دانلود با فرمت انتخابی</button>
+        </div>
+      </div>
+
+      <!-- Empty State / Demo -->
+      <div id="emptyState" class="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 text-center">
+        <div class="w-20 h-20 bg-gradient-to-br from-slate-100 to-slate-50 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-slate-200">
+          <i class="fa-solid fa-images text-2xl text-slate-400"></i>
+        </div>
+        <h3 class="font-semibold text-slate-800">هنوز عکسی انتخاب نکردید</h3>
+        <p class="text-xs text-slate-500 mt-1 max-w-md mx-auto">یک یا چند عکس جدول را آپلود کنید. هر عکس به صورت خودکار به یک شیت اکسل تبدیل می‌شود، دقیقاً مثل نمونه‌ای که برایتان آماده کردیم.</p>
+        
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-6 text-right">
+          <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
+            <div class="text-xs font-semibold text-slate-700 flex items-center gap-1.5"><span class="w-6 h-6 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-[11px]">1</span> آپلود</div>
+            <div class="text-[11px] text-slate-500 mt-1">عکس‌ها را بکش و رها کن</div>
+          </div>
+          <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
+            <div class="text-xs font-semibold text-slate-700 flex items-center gap-1.5"><span class="w-6 h-6 bg-violet-100 text-violet-600 rounded-lg flex items-center justify-center text-[11px]">2</span> انتخاب فرمت</div>
+            <div class="text-[11px] text-slate-500 mt-1">Excel / CSV / JSON / TXT</div>
+          </div>
+          <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
+            <div class="text-xs font-semibold text-slate-700 flex items-center gap-1.5"><span class="w-6 h-6 bg-emerald-100 text-emerald-600 rounded-lg flex items-center justify-center text-[11px]">3</span> دانلود</div>
+            <div class="text-[11px] text-slate-500 mt-1">ویرایش و ذخیره</div>
+          </div>
+        </div>
+
+        <div class="mt-6">
+          <p class="text-xs font-medium text-slate-600 mb-2">نمونه واقعی تبدیل‌شده:</p>
+          <a href="TABDIL_parts.xlsx" download class="inline-flex items-center gap-2 text-xs bg-white border border-slate-200 px-4 py-2 rounded-xl hover:bg-slate-50">
+            <i class="fa-solid fa-file-excel text-emerald-600"></i> دانلود نمونه 4 عکس قبلی (Excel)
+          </a>
+        </div>
+      </div>
+
+      <!-- OCR Log -->
+      <div id="ocrLog" class="bg-slate-900 rounded-2xl p-4 hidden">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-medium text-slate-300">لاگ پردازش</span>
+          <button onclick="document.getElementById('ocrLog').classList.add('hidden')" class="text-slate-500 hover:text-white text-xs">بستن</button>
+        </div>
+        <div id="logContent" class="text-[11px] font-mono text-emerald-400 whitespace-pre-wrap max-h-32 overflow-auto leading-relaxed"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="text-center mt-8 text-[11px] text-slate-400">
+    ساخته شده برای TABDIL • پردازش آفلاین در مرورگر • بدون ارسال فایل به سرور
+  </div>
+</main>
+
+<script>
+let files = [];
+let workbookData = []; // array of {name, headers, rows}
+let activeSheetIndex = 0;
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const fileList = document.getElementById('fileList');
+const filePreview = document.getElementById('filePreview');
+const fileCount = document.getElementById('fileCount');
+const convertBtn = document.getElementById('convertBtn');
+const progressCard = document.getElementById('progressCard');
+const progressBar = document.getElementById('progressBar');
+const progressText = document.getElementById('progressText');
+const progressDetail = document.getElementById('progressDetail');
+const resultsCard = document.getElementById('resultsCard');
+const resultsTabs = document.getElementById('resultsTabs');
+const resultsContent = document.getElementById('resultsContent');
+const emptyState = document.getElementById('emptyState');
+const resultCount = document.getElementById('resultCount');
+const ocrLog = document.getElementById('ocrLog');
+const logContent = document.getElementById('logContent');
+
+function log(msg){
+  ocrLog.classList.remove('hidden');
+  logContent.textContent += msg + "\n";
+  logContent.scrollTop = logContent.scrollHeight;
+}
+
+// Drag & Drop
+['dragenter','dragover'].forEach(e=>{
+  dropZone.addEventListener(e, ev=>{
+    ev.preventDefault();
+    dropZone.classList.add('drag-active');
+  })
+});
+['dragleave','drop'].forEach(e=>{
+  dropZone.addEventListener(e, ev=>{
+    ev.preventDefault();
+    dropZone.classList.remove('drag-active');
+  })
+});
+dropZone.addEventListener('drop', ev=>{
+  const dt = ev.dataTransfer;
+  if(dt.files) handleFiles(dt.files);
+});
+dropZone.addEventListener('click', ()=> fileInput.click());
+fileInput.addEventListener('change', ()=> handleFiles(fileInput.files));
+
+function handleFiles(fileListArr){
+  const newFiles = Array.from(fileListArr).filter(f=> f.type.startsWith('image/'));
+  if(newFiles.length===0) return;
+  files.push(...newFiles);
+  renderFiles();
+}
+
+function renderFiles(){
+  if(files.length===0){
+    fileList.classList.add('hidden');
+    emptyState.classList.remove('hidden');
+    convertBtn.disabled = true;
+    return;
+  }
+  fileList.classList.remove('hidden');
+  emptyState.classList.add('hidden');
+  convertBtn.disabled = false;
+  fileCount.textContent = files.length;
+  filePreview.innerHTML = '';
+  files.forEach((f, idx)=>{
+    const reader = new FileReader();
+    reader.onload = e=>{
+      const div = document.createElement('div');
+      div.className = 'bg-slate-50 border border-slate-200 rounded-xl p-2 flex gap-3 items-center';
+      div.innerHTML = `
+        <img src="${e.target.result}" class="w-12 h-12 object-cover rounded-lg border border-slate-200 flex-shrink-0">
+        <div class="flex-1 min-w-0">
+          <div class="text-xs font-medium text-slate-800 truncate">${f.name}</div>
+          <div class="text-[11px] text-slate-500">${(f.size/1024).toFixed(1)} KB • ${f.type}</div>
+          <div class="text-[10px] text-slate-400">شیت: ${sanitizeSheetName(f.name.replace(/\.[^/.]+$/,''))}</div>
+        </div>
+        <button onclick="removeFile(${idx})" class="w-7 h-7 rounded-full bg-white border border-slate-200 text-slate-500 hover:text-red-600 hover:border-red-200 flex items-center justify-center flex-shrink-0"><i class="fa-solid fa-xmark text-[11px]"></i></button>
+      `;
+      // Replace or append? We'll rebuild every time, so need to handle async
+      // Instead rebuild synchronously: we already have previews, just update
+    };
+    // For sync rendering, create placeholder then load
+    const placeholder = document.createElement('div');
+    placeholder.id = `file-${idx}`;
+    placeholder.className = 'bg-slate-50 border border-slate-200 rounded-xl p-2 flex gap-3 items-center';
+    placeholder.innerHTML = `
+      <div class="w-12 h-12 bg-slate-200 rounded-lg animate-pulse flex-shrink-0"></div>
+      <div class="flex-1 min-w-0">
+        <div class="text-xs font-medium text-slate-800 truncate">${f.name}</div>
+        <div class="text-[11px] text-slate-500">${(f.size/1024).toFixed(1)} KB</div>
+      </div>
+      <button onclick="removeFile(${idx})" class="w-7 h-7 rounded-full bg-white border border-slate-200 text-slate-500 hover:text-red-600 flex items-center justify-center"><i class="fa-solid fa-xmark text-[11px]"></i></button>
+    `;
+    filePreview.appendChild(placeholder);
+    const r = new FileReader();
+    r.onload = ev=>{
+      const el = document.getElementById(`file-${idx}`);
+      if(el){
+        el.innerHTML = `
+          <img src="${ev.target.result}" class="w-12 h-12 object-cover rounded-lg border border-slate-200 flex-shrink-0">
+          <div class="flex-1 min-w-0">
+            <div class="text-xs font-medium text-slate-800 truncate">${f.name}</div>
+            <div class="text-[11px] text-slate-500">${(f.size/1024).toFixed(1)} KB • ${f.type}</div>
+            <div class="text-[10px] text-slate-400">شیت: ${sanitizeSheetName(f.name.replace(/\.[^/.]+$/,''))}</div>
+          </div>
+          <button onclick="removeFile(${idx})" class="w-7 h-7 rounded-full bg-white border border-slate-200 text-slate-500 hover:text-red-600 hover:border-red-200 flex items-center justify-center flex-shrink-0"><i class="fa-solid fa-xmark text-[11px]"></i></button>
+        `;
+      }
+    };
+    r.readAsDataURL(f);
+  });
+}
+
+function removeFile(idx){
+  files.splice(idx,1);
+  renderFiles();
+}
+function clearFiles(){
+  files = [];
+  workbookData = [];
+  renderFiles();
+  resultsCard.classList.add('hidden');
+  progressCard.classList.add('hidden');
+}
+function sanitizeSheetName(name){
+  return name.replace(/[\\\/\?\*\[\]\:]/g,'_').substring(0,28) || 'Sheet';
+}
+
+async function startConvert(){
+  if(files.length===0) return;
+  const format = document.querySelector('input[name="format"]:checked').value;
+  const lang = document.getElementById('langSelect').value;
+  const tableMode = document.getElementById('tableMode').value;
+  const enhance = document.getElementById('enhance').checked;
+
+  progressCard.classList.remove('hidden');
+  resultsCard.classList.add('hidden');
+  logContent.textContent = '';
+  ocrLog.classList.remove('hidden');
+  workbookData = [];
+  convertBtn.disabled = true;
+  convertBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> در حال پردازش...';
+
+  log(`شروع پردازش ${files.length} فایل با زبان ${lang} و فرمت ${format}`);
+  log(`حالت جدول: ${tableMode}`);
+
+  for(let i=0;i<files.length;i++){
+    const f = files[i];
+    const pct = Math.round((i/files.length)*100);
+    progressBar.style.width = pct + '%';
+    progressText.textContent = pct + '%';
+    progressDetail.textContent = `در حال پردازش ${i+1} از ${files.length}: ${f.name}`;
+    log(`[${i+1}/${files.length}] پردازش ${f.name} ...`);
+
+    try{
+      const result = await ocrFile(f, lang, enhance);
+      let parsed = parseTextToTable(result.text, tableMode);
+      // If parsing gave only 1 column but text has many lines, keep as single column
+      workbookData.push({
+        name: sanitizeSheetName(f.name.replace(/\.[^/.]+$/,'')) || `شیت ${i+1}`,
+        originalName: f.name,
+        text: result.text,
+        rows: parsed,
+        confidence: result.confidence
+      });
+      log(`✓ ${f.name} - ${parsed.length} ردیف، اطمینان ${result.confidence?.toFixed(1) || '-'}%`);
+    }catch(e){
+      log(`✗ خطا در ${f.name}: ${e.message}`);
+      // fallback: single cell with error
+      workbookData.push({
+        name: sanitizeSheetName(f.name.replace(/\.[^/.]+$/,'')),
+        originalName: f.name,
+        text: 'خطا: ' + e.message,
+        rows: [['خطا', e.message]],
+        confidence: 0
+      });
+    }
+    await new Promise(r=> setTimeout(r, 100));
+  }
+
+  progressBar.style.width = '100%';
+  progressText.textContent = '100%';
+  progressDetail.textContent = 'تکمیل شد - آماده نمایش';
+  log(`پردازش تمام شد. تولید فایل ${format} ...`);
+
+  // Render results for editing
+  renderResults();
+
+  // Auto download
+  setTimeout(()=>{
+    downloadWithFormat(format);
+    convertBtn.disabled = false;
+    convertBtn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> تبدیل و دانلود';
+    log(`✓ فایل ${format} دانلود شد`);
+  }, 500);
+}
+
+async function ocrFile(file, lang, enhance){
+  // Use Tesseract.js
+  // If enhance, we will preprocess image to grayscale/increase contrast via canvas
+  let imageSource = file;
+  if(enhance){
+    try{
+      imageSource = await preprocessImage(file);
+    }catch(e){ /* ignore */ }
+  }
+
+  const result = await Tesseract.recognize(imageSource, lang, {
+    logger: m=>{
+      if(m.status === 'recognizing text'){
+        const p = Math.round(m.progress*100);
+        progressDetail.textContent = `تشخیص متن: ${p}%`;
+      }
+    },
+    // Improve for tables
+    tessedit_pageseg_mode: '6', // Assume uniform block of text
+  });
+  return {
+    text: result.data.text || '',
+    confidence: result.data.confidence || 0,
+    words: result.data.words || []
+  };
+}
+
+function preprocessImage(file){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = ()=>{
+      const canvas = document.createElement('canvas');
+      const scale = 2;
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      const ctx = canvas.getContext('2d');
+      // White background
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0,0,canvas.width, canvas.height);
+      ctx.drawImage(img, 0,0, canvas.width, canvas.height);
+      // Grayscale + contrast
+      const imageData = ctx.getImageData(0,0,canvas.width, canvas.height);
+      const data = imageData.data;
+      for(let i=0;i<data.length;i+=4){
+        const gray = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+        // Increase contrast
+        let v = (gray - 128) * 1.2 + 128;
+        v = Math.max(0, Math.min(255, v));
+        // Simple threshold for text
+        data[i]=data[i+1]=data[i+2]=v;
+      }
+      ctx.putImageData(imageData,0,0);
+      canvas.toBlob(blob=>{
+        URL.revokeObjectURL(url);
+        resolve(blob);
+      }, 'image/png');
+    };
+    img.onerror = e=> {
+      URL.revokeObjectURL(url);
+      reject(e);
+    };
+    img.src = url;
+  });
+}
+
+function parseTextToTable(text, mode){
+  if(!text || !text.trim()) return [['متن یافت نشد']];
+  // Clean
+  let lines = text.split('\n').map(l=> l.trim()).filter(l=> l.length>0);
+  if(mode === 'lines'){
+    return lines.map(l=> [l]);
+  }
+  // Auto: try to split into columns
+  // Detect common delimiters: tab, multiple spaces, |, ;
+  let rows = [];
+  for(let line of lines){
+    // Normalize spaces
+    // If line contains | or ; or tab, split by that
+    let cols;
+    if(line.includes('\t')){
+      cols = line.split('\t').map(c=> c.trim()).filter(c=> c.length>0);
+    } else if(line.includes('|')){
+      cols = line.split('|').map(c=> c.trim()).filter(c=> c.length>0);
+    } else if(line.includes('  ')){
+      // 2+ spaces as delimiter (for tables)
+      cols = line.split(/\s{2,}/).map(c=> c.trim()).filter(c=> c.length>0);
+      // If still single column but line has many spaces, try single space split if many columns expected
+      if(cols.length===1 && line.split(/\s+/).length>4){
+        // Try to split by single space but keep as is for now
+        // Keep single column to avoid wrong split
+      }
+    } else {
+      cols = [line];
+    }
+    // If cols still 1 and line looks like table with numbers and text mixed, keep as 1
+    rows.push(cols);
+  }
+  // Normalize column count: pad rows to max cols
+  const maxCols = Math.max(...rows.map(r=> r.length));
+  if(maxCols>1){
+    rows = rows.map(r=>{
+      while(r.length < maxCols) r.push('');
+      return r;
+    });
+  }
+  // If mode is manual, we will make editable table anyway
+  return rows;
+}
+
+function renderResults(){
+  resultsCard.classList.remove('hidden');
+  resultCount.textContent = workbookData.length + ' شیت';
+  resultsTabs.innerHTML = '';
+  workbookData.forEach((sheet, idx)=>{
+    const btn = document.createElement('button');
+    btn.className = `px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap ${idx===activeSheetIndex ? 'bg-white border border-slate-200 text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`;
+    btn.textContent = `${sheet.name} (${sheet.rows.length} ردیف)`;
+    btn.onclick = ()=> { activeSheetIndex = idx; renderResults(); };
+    resultsTabs.appendChild(btn);
+  });
+  // Render active sheet as editable table
+  const active = workbookData[activeSheetIndex];
+  if(!active) return;
+  let html = `<div class="overflow-auto max-h-[500px] border-t border-slate-200">`;
+  html += `<table class="w-full text-xs border-collapse">`;
+  // Header: if first row looks like header, style it
+  active.rows.forEach((row, rIdx)=>{
+    html += `<tr class="${rIdx===0 ? 'bg-slate-50 sticky top-0' : (rIdx%2===0 ? 'bg-white' : 'bg-slate-50/50')}">`;
+    row.forEach((cell, cIdx)=>{
+      const isHeader = rIdx===0;
+      html += `<td contenteditable="true" data-r="${rIdx}" data-c="${cIdx}" class="border border-slate-200 px-2 py-1.5 min-w-[80px] ${isHeader ? 'font-semibold bg-slate-100' : ''} focus:outline-none focus:bg-blue-50 focus:ring-1 focus:ring-blue-400" style="white-space:pre-wrap; word-break:break-word;">${escapeHtml(cell)}</td>`;
+    });
+    html += `</tr>`;
+  });
+  html += `</table></div>`;
+  html += `<div class="p-2 bg-amber-50 border-t border-amber-100 text-[11px] text-amber-700">💡 روی هر سلول کلیک کنید تا ویرایش کنید. بعد از ویرایش، دوباره «دانلود» بزنید.</div>`;
+  resultsContent.innerHTML = html;
+  // Add listeners to update data on edit
+  resultsContent.querySelectorAll('td[contenteditable]').forEach(td=>{
+    td.addEventListener('blur', (e)=>{
+      const r = parseInt(e.target.dataset.r);
+      const c = parseInt(e.target.dataset.c);
+      workbookData[activeSheetIndex].rows[r][c] = e.target.textContent;
+    });
+    td.addEventListener('keydown', e=>{
+      if(e.key==='Enter'){ e.preventDefault(); e.target.blur(); }
+    });
+  });
+}
+
+function escapeHtml(s){
+  return (s||'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function addRow(){
+  if(!workbookData[activeSheetIndex]) return;
+  const cols = workbookData[activeSheetIndex].rows[0]?.length || 1;
+  workbookData[activeSheetIndex].rows.push(Array(cols).fill(''));
+  renderResults();
+}
+function addColumn(){
+  if(!workbookData[activeSheetIndex]) return;
+  workbookData[activeSheetIndex].rows.forEach(r=> r.push(''));
+  renderResults();
+}
+
+function downloadAgain(){
+  const format = document.querySelector('input[name="format"]:checked').value;
+  downloadWithFormat(format);
+}
+
+function downloadWithFormat(format){
+  // Sync edits from current table before download (if user didn't blur)
+  syncEdits();
+  if(format==='xlsx'){
+    downloadExcel();
+  } else if(format==='csv'){
+    downloadCSVZip();
+  } else if(format==='json'){
+    downloadJSON();
+  } else if(format==='txt'){
+    downloadTXT();
+  }
+}
+
+function syncEdits(){
+  const active = workbookData[activeSheetIndex];
+  if(!active) return;
+  const tds = resultsContent.querySelectorAll('td[contenteditable]');
+  tds.forEach(td=>{
+    const r = parseInt(td.dataset.r);
+    const c = parseInt(td.dataset.c);
+    if(active.rows[r] && active.rows[r][c] !== undefined){
+      active.rows[r][c] = td.textContent;
+    }
+  });
+}
+
+function downloadExcel(){
+  const wb = XLSX.utils.book_new();
+  const multi = document.getElementById('multiSheet').checked;
+  if(multi){
+    workbookData.forEach(sheet=>{
+      const ws = XLSX.utils.aoa_to_sheet(sheet.rows);
+      // Auto width
+      const colWidths = sheet.rows[0]?.map((_, i)=>{
+        const maxLen = Math.max(...sheet.rows.map(r=> (r[i]||'').toString().length));
+        return {wch: Math.min(40, Math.max(10, maxLen + 2))};
+      }) || [];
+      ws['!cols'] = colWidths;
+      // RTL
+      ws['!dir'] = 'rtl';
+      XLSX.utils.book_append_sheet(wb, ws, sheet.name.substring(0,31));
+    });
+  } else {
+    // Single sheet with all
+    let combined = [];
+    workbookData.forEach((sheet, idx)=>{
+      if(idx>0) combined.push([]); // blank row
+      combined.push([`--- ${sheet.originalName} ---`]);
+      combined.push(...sheet.rows);
+    });
+    const ws = XLSX.utils.aoa_to_sheet(combined);
+    XLSX.utils.book_append_sheet(wb, ws, "TABDIL");
+  }
+  XLSX.writeFile(wb, `TABDIL_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+async function downloadCSVZip(){
+  if(workbookData.length===1){
+    const csv = XLSX.utils.sheet_to_csv(XLSX.utils.aoa_to_sheet(workbookData[0].rows));
+    const blob = new Blob(["\uFEFF"+csv], {type:'text/csv;charset=utf-8;'});
+    saveAs(blob, workbookData[0].name + ".csv");
+  } else {
+    const zip = new JSZip();
+    workbookData.forEach(sheet=>{
+      const csv = XLSX.utils.sheet_to_csv(XLSX.utils.aoa_to_sheet(sheet.rows));
+      zip.file(sheet.name + ".csv", "\uFEFF" + csv);
+    });
+    const content = await zip.generateAsync({type:"blob"});
+    saveAs(content, `TABDIL_${new Date().toISOString().slice(0,10)}.zip`);
+  }
+}
+
+function downloadJSON(){
+  const data = {};
+  workbookData.forEach(sheet=>{
+    // First row as header if it looks like header
+    const headers = sheet.rows[0] || [];
+    const rows = sheet.rows.slice(1).map(r=>{
+      let obj = {};
+      r.forEach((val, i)=> obj[headers[i] || `col${i+1}`] = val);
+      return obj;
+    });
+    data[sheet.name] = { originalFile: sheet.originalName, headers, rows, raw: sheet.rows };
+  });
+  const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+  saveAs(blob, `TABDIL_${new Date().toISOString().slice(0,10)}.json`);
+}
+
+function downloadTXT(){
+  let txt = '';
+  workbookData.forEach(sheet=>{
+    txt += `=== ${sheet.originalName} / ${sheet.name} ===\n`;
+    sheet.rows.forEach(r=> txt += r.join('\t') + '\n');
+    txt += '\n';
+  });
+  const blob = new Blob([txt], {type:'text/plain;charset=utf-8'});
+  saveAs(blob, `TABDIL_${new Date().toISOString().slice(0,10)}.txt`);
+}
+
+// Init
+renderFiles();
+log('آماده. عکس‌های خود را انتخاب کنید.');
+</script>
+</body>
+</html>
