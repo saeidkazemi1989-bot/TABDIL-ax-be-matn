@@ -25,12 +25,16 @@ except Exception as e:
 
 # پیدا کردن tesseract.exe
 from TABDIL.ocr import TesseractEngine
-from TABDIL.util import TESSDATA_DIR
+from TABDIL.util import TESSDATA_DIR, get_saved_tesseract_path, save_tesseract_path
+import pytesseract
 
 exe = TesseractEngine._find_exe()
 print(f"\n--- Tesseract exe ---")
 if exe and os.path.exists(exe):
     print(f"[OK] پیدا شد: {exe}")
+    # مهم: مسیر را به pytesseract بده
+    pytesseract.pytesseract.tesseract_cmd = exe
+    print(f"[OK] مسیر به pytesseract داده شد")
     try:
         import subprocess
         result = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=5)
@@ -41,6 +45,15 @@ else:
     print(f"[X] پیدا نشد!")
     print("    Install-Tesseract.bat را اجرا کنید")
     print(f"    TESSDATA_DIR: {TESSDATA_DIR}")
+    # تلاش برای پیدا کردن دستی
+    import glob
+    candidates = glob.glob(r"C:\Program Files\Tesseract-OCR*\tesseract.exe")
+    candidates += glob.glob(r"C:\Program Files (x86)\Tesseract-OCR*\tesseract.exe")
+    if candidates:
+        exe = candidates[0]
+        print(f"[INFO] از مسیر جایگزین استفاده می‌شود: {exe}")
+        pytesseract.pytesseract.tesseract_cmd = exe
+        save_tesseract_path(exe)
 
 print(f"\n--- Tessdata ---")
 print(f"مسیر: {TESSDATA_DIR}")

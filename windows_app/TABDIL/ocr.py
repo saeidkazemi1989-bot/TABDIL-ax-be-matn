@@ -59,6 +59,61 @@ def _get_tessdata_candidates():
     return uniq
 
 
+def _find_tesseract_exe_static():
+    """نسخه استاتیک برای استفاده در هر جا"""
+    try:
+        from .util import get_saved_tesseract_path
+        saved = get_saved_tesseract_path()
+        if saved and os.path.exists(saved):
+            return saved
+    except Exception:
+        pass
+    env = os.environ.get("TESSERACT_CMD")
+    if env and os.path.exists(env):
+        return env
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    candidates = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                     r"Programs\Tesseract-OCR\tesseract.exe"),
+        os.path.join(os.environ.get("PROGRAMDATA", ""),
+                     r"chocolatey\bin\tesseract.exe"),
+        os.path.join(os.environ.get("USERPROFILE", ""),
+                     r"AppData\Local\Tesseract-OCR\tesseract.exe"),
+        r"C:\Tools\Tesseract-OCR\tesseract.exe",
+        r"C:\tesseract\tesseract.exe",
+    ]
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates += [
+        os.path.join(here, "tesseract", "tesseract.exe"),
+        os.path.join(os.path.dirname(here), "tesseract", "tesseract.exe"),
+        os.path.join(here, "..", "tesseract", "tesseract.exe"),
+        os.path.join(os.path.dirname(here), "..", "tesseract", "tesseract.exe"),
+        os.path.join(here, "..", "..", "tesseract", "tesseract.exe"),
+    ]
+    for pat in (r"C:\Program Files\Tesseract-OCR*\tesseract.exe",
+                r"C:\Program Files (x86)\Tesseract-OCR*\tesseract.exe"):
+        candidates += glob.glob(pat)
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
+# تنظیم خودکار مسیر tesseract در هنگام import برای جلوگیری از خطای PATH
+try:
+    import pytesseract as _pt
+    _exe = _find_tesseract_exe_static()
+    if _exe:
+        _pt.pytesseract.tesseract_cmd = _exe
+        _debug_log(f"Auto-set tesseract_cmd to {_exe} at import")
+except Exception:
+    pass
+
+
 class TesseractEngine:
     name = "tesseract"
     display_name = "Tesseract (سبک و آفلاین)"
@@ -78,46 +133,7 @@ class TesseractEngine:
 
     @staticmethod
     def _find_exe():
-        try:
-            from .util import get_saved_tesseract_path
-            saved = get_saved_tesseract_path()
-            if saved and os.path.exists(saved):
-                return saved
-        except Exception:
-            pass
-        env = os.environ.get("TESSERACT_CMD")
-        if env and os.path.exists(env):
-            return env
-        found = shutil.which("tesseract")
-        if found:
-            return found
-        candidates = [
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-            os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                         r"Programs\Tesseract-OCR\tesseract.exe"),
-            os.path.join(os.environ.get("PROGRAMDATA", ""),
-                         r"chocolatey\bin\tesseract.exe"),
-            os.path.join(os.environ.get("USERPROFILE", ""),
-                         r"AppData\Local\Tesseract-OCR\tesseract.exe"),
-            r"C:\Tools\Tesseract-OCR\tesseract.exe",
-            r"C:\tesseract\tesseract.exe",
-        ]
-        here = os.path.dirname(os.path.abspath(__file__))
-        candidates += [
-            os.path.join(here, "tesseract", "tesseract.exe"),
-            os.path.join(os.path.dirname(here), "tesseract", "tesseract.exe"),
-            os.path.join(here, "..", "tesseract", "tesseract.exe"),
-            os.path.join(os.path.dirname(here), "..", "tesseract", "tesseract.exe"),
-            os.path.join(here, "..", "..", "tesseract", "tesseract.exe"),
-        ]
-        for pat in (r"C:\Program Files\Tesseract-OCR*\tesseract.exe",
-                    r"C:\Program Files (x86)\Tesseract-OCR*\tesseract.exe"):
-            candidates += glob.glob(pat)
-        for c in candidates:
-            if c and os.path.exists(c):
-                return c
-        return None
+        return _find_tesseract_exe_static()
 
     @classmethod
     def is_available(cls):
