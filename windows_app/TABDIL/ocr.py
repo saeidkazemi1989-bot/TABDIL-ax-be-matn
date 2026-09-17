@@ -1,20 +1,29 @@
 # -*- coding: utf-8 -*-
-"""لایه انتزاعی موتورهای OCR - نسخه متعادل: قوی برای تشخیص ولی سریع
-  - TesseractEngine : سبک و آفلاین
-  - PaddleEngine   : دقیق‌تر
-  فیکس: تعادل بین سرعت و دقت - 4-6 تست به جای 16+ ولی کافی برای تشخیص
-"""
+"""OCR - نسخه دیباگ با فال‌بک‌های بسیار قوی و لاگ‌گیری"""
 import os
 import glob
 import shutil
 import threading
 import sys
 import re
+import traceback
 
 import numpy as np
 
 from .table import Word, words_from_tesseract_data
 from .util import TESSDATA_DIR, clean_ocr_word
+
+
+def _debug_log(msg):
+    try:
+        log_dir = os.path.join(os.path.expanduser("~"), "Desktop", "TABDIL_debug")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "ocr_debug.log")
+        with open(log_path, "a", encoding="utf-8") as f:
+            import datetime
+            f.write(f"[{datetime.datetime.now()}] {msg}\n")
+    except Exception:
+        pass
 
 
 class TesseractEngine:
@@ -27,7 +36,11 @@ class TesseractEngine:
         exe = self._find_exe()
         if exe:
             pytesseract.pytesseract.tesseract_cmd = exe
+            _debug_log(f"Tesseract exe: {exe}")
+        else:
+            _debug_log("Tesseract exe NOT FOUND")
         os.environ.setdefault("TESSDATA_PREFIX", TESSDATA_DIR)
+        _debug_log(f"TESSDATA_DIR: {TESSDATA_DIR} exists={os.path.exists(TESSDATA_DIR)} fas={os.path.exists(os.path.join(TESSDATA_DIR, 'fas.traineddata'))}")
         self._lock = threading.Lock()
 
     @staticmethod
@@ -91,186 +104,231 @@ class TesseractEngine:
         return True, exe
 
     def _recognize_psm(self, gray_img, lang, psm, oem=3, extra_config=""):
-        config = f'--tessdata-dir "{TESSDATA_DIR}" --oem {oem} --psm {psm} {extra_config}'
-        with self._lock:
-            data = self._pytesseract.image_to_data(
-                gray_img, lang=lang, config=config,
-                output_type=self._pytesseract.Output.DICT,
-            )
-        return data
+        # تلاش اول با tessdata-dir
+        configs_to_try = [
+            f'--tessdata-dir "{TESSDATA_DIR}" --oem {oem} --psm {psm} {extra_config}',
+            f'--oem {oem} --psm {psm} {extra_config}',  # بدون tessdata-dir
+            f'--tessdata-dir "{TESSDATA_DIR}" --oem 3 --psm {psm}',  # ساده
+            f'--oem 3 --psm {psm}',
+        ]
+        last_exc = None
+        for cfg in configs_to_try:
+            try:
+                with self._lock:
+                    data = self._pytesseract.image_to_data(
+                        gray_img, lang=lang, config=cfg,
+                        output_type=self._pytesseract.Output.DICT,
+                    )
+                # اگر دیتا برگشت، حتی اگر خالی، موفق بوده
+                return data
+            except Exception as e:
+                last_exc = e
+                _debug_log(f"PSM {psm} OEM {oem} lang {lang} config failed: {e} | cfg={cfg}")
+                continue
+        # اگر همه شکست خورد، خطا را پرتاب کن
+        if last_exc:
+            raise last_exc
+        return {"text": [], "conf": [], "left": [], "top": [], "width": [], "height": []}
 
     def _recognize_string(self, gray_img, lang, psm, oem=3, extra_config=""):
-        config = f'--tessdata-dir "{TESSDATA_DIR}" --oem {oem} --psm {psm} {extra_config}'
-        with self._lock:
-            text = self._pytesseract.image_to_string(
-                gray_img, lang=lang, config=config
-            )
-        return text
+        configs_to_try = [
+            f'--tessdata-dir "{TESSDATA_DIR}" --oem {oem} --psm {psm} {extra_config}',
+            f'--oem {oem} --psm {psm} {extra_config}',
+            f'--tessdata-dir "{TESSDATA_DIR}" --oem 3 --psm {psm}',
+            f'--oem 3 --psm {psm}',
+        ]
+        last_exc = None
+        for cfg in configs_to_try:
+            try:
+                with self._lock:
+                    text = self._pytesseract.image_to_string(
+                        gray_img, lang=lang, config=cfg
+                    )
+                return text
+            except Exception as e:
+                last_exc = e
+                _debug_log(f"String PSM {psm} OEM {oem} lang {lang} failed: {e}")
+                continue
+        if last_exc:
+            _debug_log(f"All string configs failed for lang {lang} psm {psm}: {last_exc}")
+            return ""
+        return ""
 
     def recognize(self, gray_img, lang="fas+eng", table_mode=True):
-        # جدول: 5 کانفیگ برتر، متن: 5 کانفیگ برتر - تعادل سرعت و دقت
+        import cv2
+        _debug_log(f"recognize called table_mode={table_mode} lang={lang} shape={gray_img.shape} mean={gray_img.mean():.1f}")
+        
+        # ذخیره تصویر دیباگ
+        try:
+            debug_dir = os.path.join(os.path.expanduser("~"), "Desktop", "TABDIL_debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            import datetime
+            ts = datetime.datetime.now().strftime("%H%M%S")
+            cv2.imwrite(os.path.join(debug_dir, f"input_{ts}_{table_mode}_{lang}.jpg"), gray_img)
+        except Exception:
+            pass
+        
+        # لیست تصاویر برای تست: اصلی، باینری، معکوس
+        images_to_try = []
+        images_to_try.append(("gray", gray_img))
+        
+        # باینری OTSU
+        try:
+            _, binary = cv2.threshold(gray_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            images_to_try.append(("binary_otsu", binary))
+        except Exception:
+            pass
+        
+        # باینری adaptive
+        try:
+            binary_adapt = cv2.adaptiveThreshold(gray_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+            images_to_try.append(("binary_adapt", binary_adapt))
+        except Exception:
+            pass
+        
+        # اگر تصویر تیره است، معکوس کن
+        try:
+            if gray_img.mean() < 100:
+                inv = cv2.bitwise_not(gray_img)
+                images_to_try.append(("inverted", inv))
+                _, binary_inv = cv2.threshold(inv, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                images_to_try.append(("binary_inv", binary_inv))
+        except Exception:
+            pass
+        
         if table_mode:
-            # برای جدول، PSM 6 بهترین است، ولی fallback های قوی هم لازم است
             configs = [
-                (lang, 6, 3, ""),  # اصلی
-                ("fas", 6, 3, ""),  # فقط فارسی
+                (lang, 6, 3, ""),
+                ("fas", 6, 3, ""),
+                ("fas+eng", 6, 3, ""),
                 (lang, 6, 1, "-c preserve_interword_spaces=1"),
-                (lang, 4, 1, ""),
+                (lang, 4, 3, ""),
                 (lang, 3, 3, ""),
-                ("fas+eng", 11, 3, ""),  # برای جدول‌های شلوغ
+                (lang, 11, 3, ""),
+                ("eng", 6, 3, ""),  # آخرین تلاش انگلیسی
             ]
-            # اگر lang قبلاً fas+eng است، fas را هم امتحان کن
-            if lang == "fas+eng":
-                # قبلاً در لیست هست
-                pass
-            elif lang == "fas":
-                configs.insert(1, ("fas+eng", 6, 3, ""))
-            
-            best_words = []
-            best_conf = 0
+        else:
+            configs = [
+                ("fas", 6, 1, "-c preserve_interword_spaces=1"),
+                (lang, 6, 1, "-c preserve_interword_spaces=1"),
+                ("fas", 6, 3, "-c preserve_interword_spaces=1"),
+                (lang, 6, 3, ""),
+                ("fas", 4, 1, ""),
+                ("fas", 3, 1, ""),
+                (lang, 11, 1, ""),
+                ("fas+eng", 6, 3, ""),
+            ]
+        
+        best_words = []
+        best_score = -1
+        best_img_type = ""
+        
+        for img_type, img in images_to_try:
             for try_lang, psm, oem, extra in configs:
                 try:
-                    data = self._recognize_psm(gray_img, try_lang, psm, oem, extra)
+                    # اول string را امتحان کن - سریع‌تر
+                    text = self._recognize_string(img, try_lang, psm, oem, extra)
+                    if not text or len(text.strip()) < 2:
+                        # حتی اگر string خالی، data را هم امتحان کن
+                        pass
+                    else:
+                        _debug_log(f"Found text len={len(text)} lang={try_lang} psm={psm} img={img_type}: {text[:100]}")
+                    
+                    data = self._recognize_psm(img, try_lang, psm, oem, extra)
                     words = words_from_tesseract_data(data)
+                    
+                    if not words and text and len(text.strip()) > 2:
+                        # از text کلمات بساز
+                        words = []
+                        y = 0
+                        for line in text.split('\n'):
+                            line = line.strip()
+                            if not line:
+                                continue
+                            x = 1000
+                            for wt in line.split():
+                                if not wt:
+                                    continue
+                                words.append(Word(x=x, y=y, w=len(wt)*12, h=16, text=wt, conf=35,
+                                                  block_num=0, par_num=0, line_num=y//25, word_num=x))
+                                x -= 80
+                            y += 25
+                    
                     if not words:
                         continue
+                    
                     conf = float(np.mean([w.conf for w in words])) if words else 0
-                    # امتیاز: تعداد کلمات + اطمینان
-                    score = len(words) * 2 + conf
-                    if score > best_conf:
-                        best_conf = score
+                    total_chars = sum(len(w.text) for w in words)
+                    persian_chars = len(re.findall(r'[ء-ی]', "".join([w.text for w in words])))
+                    
+                    score = len(words) * 3 + conf + total_chars * 0.5 + persian_chars
+                    
+                    if table_mode:
+                        # برای جدول، تعداد کلمات بیشتر بهتر
+                        score += len(words) * 2
+                    else:
+                        # برای متن، فارسی بیشتر بهتر
+                        if persian_chars > total_chars * 0.2:
+                            score += 40
+                    
+                    _debug_log(f"Words found: {len(words)} conf={conf:.1f} lang={try_lang} psm={psm} img={img_type} score={score:.1f}")
+                    
+                    if score > best_score:
+                        best_score = score
                         best_words = words
-                        # اگر نتیجه خیلی خوب است، ادامه نده
-                        if len(words) > 20 and conf > 50:
+                        best_img_type = img_type
+                        if best_score > 200 and len(words) > 15:
+                            _debug_log(f"Early break with good result: {best_score}")
                             break
+                except Exception as e:
+                    _debug_log(f"Config failed lang={try_lang} psm={psm} img={img_type}: {e}\n{traceback.format_exc()}")
+                    continue
+            if best_score > 150:
+                break
+        
+        _debug_log(f"Best result: {len(best_words)} words score={best_score} img_type={best_img_type}")
+        
+        if best_words:
+            conf = float(np.mean([w.conf for w in best_words])) if best_words else 0.0
+            return best_words, conf
+        
+        # آخرین تلاش: فقط string بدون data
+        for img_type, img in images_to_try:
+            for try_lang, psm, oem, extra in configs[:3]:
+                try:
+                    text = self._recognize_string(img, try_lang, psm, oem, extra)
+                    if text and len(text.strip()) > 5:
+                        _debug_log(f"Fallback string success: {text[:200]}")
+                        words = []
+                        y = 0
+                        for line in text.split('\n'):
+                            line = line.strip()
+                            if not line:
+                                continue
+                            x = 1000
+                            for wt in line.split():
+                                words.append(Word(x=x, y=y, w=len(wt)*12, h=16, text=wt, conf=40,
+                                                  block_num=0, par_num=0, line_num=y//25, word_num=x))
+                                x -= 80
+                            y += 25
+                        if words:
+                            return words, 40.0
                 except Exception:
                     continue
-            
-            if best_words:
-                conf = float(np.mean([w.conf for w in best_words])) if best_words else 0.0
-                return best_words, conf
-            
-            # آخرین تلاش: image_to_string و ساخت کلمات از آن
-            try:
-                text = self._recognize_string(gray_img, lang, 6, 3, "")
-                if text and len(text.strip()) > 10:
-                    words = []
-                    y = 0
-                    for line in text.split('\n'):
-                        line = line.strip()
-                        if not line:
-                            continue
-                        x = 1000
-                        for wt in line.split():
-                            if len(wt) < 1:
-                                continue
-                            words.append(Word(x=x, y=y, w=len(wt)*15, h=18, text=wt, conf=40,
-                                              block_num=0, par_num=0, line_num=y//30, word_num=x))
-                            x -= 100
-                        y += 30
-                    if words:
-                        return words, 40.0
-            except Exception:
-                pass
-            
-            return [], 0.0
-        else:
-            # دست‌نویس/متن: از image_to_string برای حفظ معنی
-            best_words = []
-            best_text = ""
-            best_score = -1
-            
-            # کانفیگ‌های بهینه برای دست‌نویس فارسی - 5 تا برتر
-            configs = [
-                (6, 1, "-c preserve_interword_spaces=1"),  # بهترین برای پاراگراف فارسی
-                (6, 3, "-c preserve_interword_spaces=1"),
-                (4, 1, "-c preserve_interword_spaces=1"),
-                (3, 1, ""),
-                (11, 1, ""),
-            ]
-            
-            langs = [lang]
-            if lang == "fas+eng":
-                langs = ["fas", "fas+eng"]  # اول فقط فارسی برای دست‌نویس
-            elif lang == "fas":
-                langs = ["fas", "fas+eng"]
-            
-            for try_lang in langs:
-                for psm, oem, extra in configs:
-                    try:
-                        text = self._recognize_string(gray_img, try_lang, psm, oem, extra)
-                        if not text or len(text.strip()) < 3:
-                            continue
-                        
-                        data = self._recognize_psm(gray_img, try_lang, psm, oem, extra)
-                        words = words_from_tesseract_data(data)
-                        
-                        total_chars = len(text.strip())
-                        persian_chars = len(re.findall(r'[ء-ی]', text))
-                        avg_conf = float(np.mean([w.conf for w in words])) if words else 20
-                        
-                        # امتیاز
-                        score = total_chars + persian_chars * 1.5 + avg_conf + len(words)
-                        if persian_chars > total_chars * 0.2:
-                            score += 30
-                        if total_chars > 30:
-                            score += 20
-                        
-                        if score > best_score:
-                            best_score = score
-                            best_words = words
-                            best_text = text
-                            
-                            # اگر نتیجه خیلی خوب، ادامه نده
-                            if total_chars > 80 and persian_chars > 15 and avg_conf > 35:
-                                break
-                    except Exception:
-                        continue
-                if best_score > 100:
-                    break
-            
-            # اگر متنی داریم ولی کلمه نداریم، از متن کلمات بساز
-            if best_text and not best_words:
-                words = []
-                y = 0
-                for line in best_text.split('\n'):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    x = 1000
-                    for wt in line.split():
-                        if not wt:
-                            continue
-                        words.append(Word(x=x, y=y, w=len(wt)*15, h=18, text=wt, conf=40,
-                                          block_num=0, par_num=0, line_num=y//30, word_num=x))
-                        x -= 100
-                    y += 30
-                conf = 40.0
-                return words, conf
-            
-            conf = float(np.mean([w.conf for w in best_words])) if best_words else 0.0
-            # اگر هنوز خالی است ولی best_text داریم، از آن استفاده کن
-            if not best_words and best_text:
-                words = []
-                y = 0
-                for line in best_text.split('\n'):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    x = 1000
-                    for wt in line.split():
-                        words.append(Word(x=x, y=y, w=len(wt)*12, h=16, text=wt, conf=35,
-                                          block_num=0, par_num=0, line_num=y//25, word_num=x))
-                        x -= 80
-                    y += 25
-                return words, 35.0
-            
-            return best_words, conf
+        
+        _debug_log("All attempts failed - returning empty")
+        return [], 0.0
 
     def recognize_with_lines(self, gray_img, lang="fas+eng"):
-        """مستقیم خطوط را بگیر - 4 کانفیگ برتر"""
-        best_lines = []
-        best_score = -1
+        import cv2
+        _debug_log(f"recognize_with_lines lang={lang} shape={gray_img.shape}")
+        
+        images_to_try = [("gray", gray_img)]
+        try:
+            _, binary = cv2.threshold(gray_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            images_to_try.append(("binary", binary))
+        except Exception:
+            pass
         
         configs = [
             (6, 1, "-c preserve_interword_spaces=1"),
@@ -283,42 +341,50 @@ class TesseractEngine:
         langs = [lang]
         if lang == "fas+eng":
             langs = ["fas", "fas+eng"]
+        elif lang == "fas":
+            langs = ["fas", "fas+eng"]
         
-        for try_lang in langs:
-            for psm, oem, extra in configs:
-                try:
-                    text = self._recognize_string(gray_img, try_lang, psm, oem, extra)
-                    if not text or len(text.strip()) < 3:
-                        continue
-                    lines = [l.strip() for l in text.split('\n') if l.strip()]
-                    if not lines:
-                        continue
-                    
-                    # فیلتر نویز
-                    filtered = []
-                    for l in lines:
-                        if re.match(r'^[|_\-—–¦\s]+$', l):
+        best_lines = []
+        best_score = -1
+        
+        for img_type, img in images_to_try:
+            for try_lang in langs:
+                for psm, oem, extra in configs:
+                    try:
+                        text = self._recognize_string(img, try_lang, psm, oem, extra)
+                        if not text or len(text.strip()) < 2:
                             continue
-                        if len(l) < 2:
+                        lines = [l.strip() for l in text.split('\n') if l.strip()]
+                        filtered = []
+                        for l in lines:
+                            if re.match(r'^[|_\-—–¦\s]+$', l):
+                                continue
+                            if len(l) < 2:
+                                continue
+                            filtered.append(l)
+                        if not filtered:
                             continue
-                        filtered.append(l)
-                    if not filtered:
+                        
+                        total_chars = sum(len(l) for l in filtered)
+                        persian_chars = len(re.findall(r'[ء-ی]', "".join(filtered)))
+                        score = total_chars + persian_chars + len(filtered)*5
+                        
+                        _debug_log(f"Lines: {len(filtered)} chars={total_chars} lang={try_lang} psm={psm} img={img_type} score={score}")
+                        
+                        if score > best_score:
+                            best_score = score
+                            best_lines = filtered
+                            if total_chars > 100 and persian_chars > 20:
+                                break
+                    except Exception as e:
+                        _debug_log(f"Lines failed lang={try_lang} psm={psm}: {e}")
                         continue
-                    
-                    total_chars = sum(len(l) for l in filtered)
-                    persian_chars = len(re.findall(r'[ء-ی]', "".join(filtered)))
-                    score = total_chars + persian_chars + len(filtered)*5
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_lines = filtered
-                        if total_chars > 100 and persian_chars > 20:
-                            break
-                except Exception:
-                    continue
+                if best_score > 80:
+                    break
             if best_score > 80:
                 break
         
+        _debug_log(f"Best lines: {len(best_lines)} score={best_score}")
         return best_lines
 
     def quick_conf(self, gray_img, lang="fas+eng"):
@@ -337,7 +403,17 @@ class TesseractEngine:
                      if self._good_conf(c)]
             return float(np.mean(confs)) if confs else 0.0
         except Exception:
-            return 0.0
+            try:
+                config2 = f'--oem 3 --psm 11'
+                with self._lock:
+                    data = self._pytesseract.image_to_data(
+                        small, lang=lang, config=config2,
+                        output_type=self._pytesseract.Output.DICT)
+                confs = [float(c) for c in data.get("conf", [])
+                         if self._good_conf(c)]
+                return float(np.mean(confs)) if confs else 0.0
+            except Exception:
+                return 0.0
 
     @staticmethod
     def _good_conf(c):
@@ -365,7 +441,19 @@ class TesseractEngine:
             conf = float(mc.group(1)) if mc else None
             return deg, conf
         except Exception:
-            return None, None
+            try:
+                with self._lock:
+                    out = self._pytesseract.image_to_osd(
+                        small,
+                        config='--oem 3 --psm 0',
+                        lang="osd")
+                m = re.search(r"Rotate:\s*(\d+)", out)
+                mc = re.search(r"Orientation confidence:\s*([0-9.eE+-]+)", out)
+                deg = int(m.group(1)) if m else None
+                conf = float(mc.group(1)) if mc else None
+                return deg, conf
+            except Exception:
+                return None, None
 
 
 def _paddle_model_root():
@@ -584,7 +672,7 @@ class PaddleEngine:
             ys = [p[1] for p in box]
             x, y = int(min(xs)), int(min(ys))
             w, h = int(max(xs) - x), int(max(ys) - y)
-            if score < 0.25 and len(text.strip()) < 2:
+            if score < 0.2 and len(text.strip()) < 2:
                 continue
             words.append(Word(x=x, y=y, w=max(1, w), h=max(1, h),
                               text=clean_ocr_word(text), conf=float(score) * 100.0))

@@ -705,13 +705,24 @@ class App(_BaseTk):
             q.put(("progress", i / total))
             try:
                 raw = load_gray(path)
+                raw_original = raw.copy()  # نگه دار برای فال‌بک
                 # اگر عکس خیلی بزرگ است، اول کوچک کن تا هنگ نکند
                 try:
                     import cv2
                     h0, w0 = raw.shape[:2]
-                    if max(h0, w0) > 2400:
-                        scale0 = 2000.0 / max(h0, w0)
+                    if max(h0, w0) > 2800:
+                        scale0 = 2400.0 / max(h0, w0)
                         raw = cv2.resize(raw, None, fx=scale0, fy=scale0, interpolation=cv2.INTER_AREA)
+                        q.put(("status", f"عکس بزرگ بود، به {raw.shape[1]}x{raw.shape[0]} کوچک شد"))
+                except Exception:
+                    pass
+                
+                # ذخیره دیباگ
+                try:
+                    debug_dir = os.path.join(os.path.expanduser("~"), "Desktop", "TABDIL_debug")
+                    os.makedirs(debug_dir, exist_ok=True)
+                    import cv2
+                    cv2.imwrite(os.path.join(debug_dir, f"00_raw_{os.path.basename(path)}"), raw)
                 except Exception:
                     pass
                 
@@ -759,30 +770,87 @@ class App(_BaseTk):
                         kind = "text"
                 
                 if kind == "table":
-                    # جدول: حذف خطوط و OCR با fallback های قوی
+                    # جدول: با دیباگ و فال‌بک‌های بسیار قوی
                     try:
+                        # ذخیره light برای دیباگ
+                        try:
+                            import cv2
+                            debug_dir = os.path.join(os.path.expanduser("~"), "Desktop", "TABDIL_debug")
+                            cv2.imwrite(os.path.join(debug_dir, f"01_light_{os.path.basename(path)}"), light)
+                        except Exception:
+                            pass
+                        
                         nolines = remove_grid_lines(light, xs, ys)
                         ocr_img = polish_gray(nolines) if st["enhance"] else nolines
-                        words, conf = engine.recognize(ocr_img, lang=st["lang"], table_mode=True)
                         
-                        # اگر کلمه‌ای پیدا نشد، روی تصویر بدون حذف خطوط هم امتحان کن
+                        try:
+                            import cv2
+                            cv2.imwrite(os.path.join(debug_dir, f"02_nolines_{os.path.basename(path)}"), nolines)
+                            cv2.imwrite(os.path.join(debug_dir, f"03_ocr_img_{os.path.basename(path)}"), ocr_img)
+                        except Exception:
+                            pass
+                        
+                        words, conf = engine.recognize(ocr_img, lang=st["lang"], table_mode=True)
+                        q.put(("status", f"تشخیص اولیه: {len(words)} کلمه، اطمینان {conf:.0f}%"))
+                        
+                        # فال‌بک ۱: بدون حذف خطوط
                         if not words:
                             q.put(("status", f"تلاش مجدد بدون حذف خطوط جدول..."))
                             try:
                                 words2, conf2 = engine.recognize(light, lang=st["lang"], table_mode=True)
+                                q.put(("status", f"بدون حذف خطوط: {len(words2)} کلمه"))
                                 if words2 and len(words2) > len(words):
                                     words, conf = words2, conf2
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                q.put(("status", f"خطا در تلاش دوم: {e}"))
                         
-                        # اگر باز هم خالی، روی تصویر اصلی gray0 امتحان کن
+                        # فال‌بک ۲: روی gray0
                         if not words:
                             try:
                                 words3, conf3 = engine.recognize(gray0, lang=st["lang"], table_mode=True)
+                                q.put(("status", f"روی تصویر اصلی: {len(words3)} کلمه"))
                                 if words3 and len(words3) > len(words):
                                     words, conf = words3, conf3
                             except Exception:
                                 pass
+                        
+                        # فال‌بک ۳: روی raw_original بدون هیچ پردازش
+                        if not words:
+                            q.put(("status", f"تلاش روی عکس خام بدون پردازش..."))
+                            try:
+                                words4, conf4 = engine.recognize(raw_original, lang=st["lang"], table_mode=True)
+                                q.put(("status", f"عکس خام: {len(words4)} کلمه"))
+                                if words4:
+                                    words, conf = words4, conf4
+                            except Exception:
+                                pass
+                        
+                        # فال‌بک ۴: مستقیم pytesseract بدون wrapper
+                        if not words:
+                            q.put(("status", f"تلاش مستقیم با Tesseract..."))
+                            try:
+                                import pytesseract
+                                from TABDIL.util import TESSDATA_DIR
+                                # امتحان ساده
+                                txt = pytesseract.image_to_string(ocr_img, lang=st["lang"], config=f'--oem 3 --psm 6')
+                                q.put(("status", f"مستقیم: {len(txt)} کاراکتر"))
+                                if txt and len(txt.strip()) > 3:
+                                    # بساز words از txt
+                                    words = []
+                                    y = 0
+                                    for line in txt.split('\n'):
+                                        line=line.strip()
+                                        if not line:
+                                            continue
+                                        x=1000
+                                        for wt in line.split():
+                                            from TABDIL.table import Word
+                                            words.append(Word(x=x, y=y, w=len(wt)*12, h=16, text=wt, conf=40, block_num=0, par_num=0, line_num=y//25, word_num=x))
+                                            x-=80
+                                        y+=25
+                                    conf = 35
+                            except Exception as e:
+                                q.put(("status", f"تلاش مستقیم شکست: {e}"))
                         
                         # ساخت جدول
                         if is_table_like(light, xs, ys) and words:
@@ -794,50 +862,71 @@ class App(_BaseTk):
                         if not rows and words:
                             rows = [[l] for l in build_paragraph_lines(words)]
                         
-                        # آخرین fallback: اگر هنوز خالی، از recognize_with_lines استفاده کن
                         if not rows:
                             try:
                                 if hasattr(engine, 'recognize_with_lines'):
                                     lines = engine.recognize_with_lines(ocr_img, lang=st["lang"])
                                     if not lines:
                                         lines = engine.recognize_with_lines(light, lang=st["lang"])
+                                    if not lines:
+                                        lines = engine.recognize_with_lines(raw_original, lang=st["lang"])
                                     if lines:
                                         rows = [[l] for l in lines]
+                                        q.put(("status", f"از خطوط مستقیم: {len(lines)} خط"))
                             except Exception:
                                 pass
                         
-                        # اگر باز هم خالی، پیام راهنما
                         if not rows:
-                            rows = [["(متنی تشخیص داده نشد)"]]
-                            # سعی کن حداقل یک متن از image_to_string بگیری
+                            # لاگ کامل برای دیباگ
                             try:
-                                if hasattr(engine, '_recognize_string'):
-                                    txt = engine._recognize_string(ocr_img, st["lang"], 6, 3, "")
-                                    if txt and len(txt.strip()) > 5:
-                                        rows = [[line] for line in txt.split('\n') if line.strip()]
+                                debug_dir = os.path.join(os.path.expanduser("~"), "Desktop", "TABDIL_debug")
+                                log_path = os.path.join(debug_dir, "table_fail.log")
+                                with open(log_path, "a", encoding="utf-8") as f:
+                                    f.write(f"\n--- {path} ---\n")
+                                    f.write(f"xs={len(xs)} ys={len(ys)} table_like={is_table_like(light, xs, ys)}\n")
+                                    f.write(f"words={len(words)} light shape={light.shape} ocr_img shape={ocr_img.shape}\n")
                             except Exception:
                                 pass
-                            if not rows or rows == [["(متنی تشخیص داده نشد)"]]:
-                                rows = [
-                                    ["راهنما: متنی تشخیص داده نشد"],
-                                    ["۱. زبان را 'فقط فارسی' بگذارید"],
-                                    ["۲. عکس واضح‌تر با نور بهتر بگیرید"],
-                                    ["۳. موتور 'سبک (Tesseract)' را انتخاب کنید"],
-                                    ["۴. تیک 'بهبود کیفیت' را فعال کنید"]
-                                ]
-                                conf = 0
+                            
+                            rows = [
+                                ["(متنی تشخیص داده نشد)"],
+                                [f"اطلاعات دیباگ: xs={len(xs)} ys={len(ys)} کلمات={len(words)}"],
+                                ["پیشنهادات:"],
+                                ["۱. زبان را 'فقط فارسی' بگذارید"],
+                                ["۲. عکس واضح‌تر با نور بهتر بگیرید"],
+                                ["۳. موتور 'سبک (Tesseract)' را انتخاب کنید"],
+                                ["۴. تیک 'بهبود کیفیت' را فعال کنید"],
+                                ["۵. پوشه Desktop/TABDIL_debug را چک کنید"],
+                                ["۶. فایل Check-Installation.bat را اجرا کنید"]
+                            ]
+                            conf = 0
                     except Exception as e:
                         import traceback
-                        print(f"Table error: {e}\n{traceback.format_exc()}")
-                        rows = [[f"خطا: {e}"]]
+                        tb = traceback.format_exc()
+                        print(f"Table error: {e}\n{tb}")
+                        try:
+                            debug_dir = os.path.join(os.path.expanduser("~"), "Desktop", "TABDIL_debug")
+                            with open(os.path.join(debug_dir, "error.log"), "a", encoding="utf-8") as f:
+                                f.write(f"\nTable error {path}: {e}\n{tb}\n")
+                        except Exception:
+                            pass
+                        rows = [[f"خطا: {e}"], [tb[:500]]]
                         conf = 0
                     results.append({"name": name, "kind": "table", "rows": rows,
                                     "conf": conf, "file": path})
                 else:
-                    # دست‌نویس/متن: با fallback قوی
+                    # دست‌نویس/متن: با دیباگ و فال‌بک‌های بسیار قوی
                     try:
                         ocr_img, _c2, _s2 = enhance_gray(gray0, st["enhance"],
                                                         polish=True, handwritten=True)
+                        
+                        try:
+                            import cv2
+                            debug_dir = os.path.join(os.path.expanduser("~"), "Desktop", "TABDIL_debug")
+                            cv2.imwrite(os.path.join(debug_dir, f"04_hand_{os.path.basename(path)}"), ocr_img)
+                            cv2.imwrite(os.path.join(debug_dir, f"05_gray0_{os.path.basename(path)}"), gray0)
+                        except Exception:
+                            pass
                         
                         use_engine = engine
                         use_lang = st["lang"]
@@ -847,7 +936,7 @@ class App(_BaseTk):
                                 use_engine = tess
                                 if st["lang"].startswith("fas"):
                                     use_lang = "fas"
-                                q.put(("status", "دست‌نویس - موتور سبک (سریع‌تر) استفاده می‌شود"))
+                                q.put(("status", "دست‌نویس - موتور سبک استفاده می‌شود"))
                             except Exception:
                                 use_engine = engine
                         
@@ -858,16 +947,18 @@ class App(_BaseTk):
                         try:
                             if hasattr(use_engine, 'recognize_with_lines'):
                                 lines = use_engine.recognize_with_lines(ocr_img, lang=use_lang)
-                        except Exception:
+                                q.put(("status", f"خطوط مستقیم: {len(lines)} خط"))
+                        except Exception as e:
+                            q.put(("status", f"خطا در خطوط مستقیم: {e}"))
                             lines = []
                         
                         # تلاش ۲: کلمات
                         try:
                             words, conf = use_engine.recognize(ocr_img, lang=use_lang, table_mode=False)
+                            q.put(("status", f"کلمات: {len(words)} کلمه، اطمینان {conf:.0f}%"))
                             if not lines and words:
                                 lines = build_paragraph_lines(words)
                             elif words and lines:
-                                # کدام بهتر؟
                                 direct_len = sum(len(l) for l in lines) if lines else 0
                                 words_len = sum(len(w.text) for w in words)
                                 if words_len > direct_len * 1.2:
@@ -875,40 +966,81 @@ class App(_BaseTk):
                                     if sum(len(l) for l in lines_from_words) > direct_len:
                                         lines = lines_from_words
                         except Exception as e:
+                            q.put(("status", f"خطا در کلمات: {e}"))
                             if not lines:
                                 lines = []
                         
-                        # تلاش ۳: اگر خالی، روی gray0 بدون enhance امتحان کن
+                        # تلاش ۳: روی gray0
                         if not lines:
-                            q.put(("status", "تلاش مجدد بدون بهبود کیفیت..."))
+                            q.put(("status", "تلاش روی تصویر اصلی بدون بهبود..."))
                             try:
                                 if hasattr(use_engine, 'recognize_with_lines'):
                                     lines2 = use_engine.recognize_with_lines(gray0, lang=use_lang)
-                                    if lines2 and sum(len(l) for l in lines2) > 5:
+                                    if lines2 and sum(len(l) for l in lines2) > 3:
                                         lines = lines2
+                                        q.put(("status", f"gray0 خطوط: {len(lines2)}"))
                                 if not lines:
                                     words2, conf2 = use_engine.recognize(gray0, lang=use_lang, table_mode=False)
                                     if words2:
                                         lines = build_paragraph_lines(words2)
                                         words, conf = words2, conf2
+                                        q.put(("status", f"gray0 کلمات: {len(words2)}"))
                             except Exception:
                                 pass
                         
-                        # تلاش ۴: زبان دیگر
+                        # تلاش ۴: روی raw_original
+                        if not lines:
+                            q.put(("status", "تلاش روی عکس خام..."))
+                            try:
+                                if hasattr(use_engine, 'recognize_with_lines'):
+                                    lines3 = use_engine.recognize_with_lines(raw_original, lang=use_lang)
+                                    if lines3:
+                                        lines = lines3
+                                if not lines:
+                                    words3, conf3 = use_engine.recognize(raw_original, lang=use_lang, table_mode=False)
+                                    if words3:
+                                        lines = build_paragraph_lines(words3)
+                                        words, conf = words3, conf3
+                            except Exception:
+                                pass
+                        
+                        # تلاش ۵: زبان fas
                         if not lines and use_lang != "fas":
                             try:
                                 if hasattr(use_engine, 'recognize_with_lines'):
                                     lines_fas = use_engine.recognize_with_lines(ocr_img, lang="fas")
                                     if lines_fas:
                                         lines = lines_fas
+                                        q.put(("status", f"fas: {len(lines_fas)} خط"))
                             except Exception:
                                 pass
                         
-                        # تلاش ۵: image_to_string مستقیم
+                        # تلاش ۶: مستقیم pytesseract
+                        if not lines:
+                            q.put(("status", "تلاش مستقیم Tesseract..."))
+                            try:
+                                import pytesseract
+                                txt = pytesseract.image_to_string(ocr_img, lang=use_lang, config='--oem 3 --psm 6')
+                                q.put(("status", f"مستقیم: {len(txt)} کاراکتر"))
+                                if txt and len(txt.strip()) > 3:
+                                    lines = [l.strip() for l in txt.split('\n') if l.strip()]
+                                    if not lines:
+                                        lines = [txt.strip()]
+                            except Exception as e:
+                                q.put(("status", f"مستقیم شکست: {e}"))
+                        
+                        # تلاش ۷: باینری
                         if not lines:
                             try:
-                                if hasattr(use_engine, '_recognize_string'):
-                                    txt = use_engine._recognize_string(ocr_img, use_lang, 6, 1, "-c preserve_interword_spaces=1")
+                                import cv2
+                                _, binary = cv2.threshold(ocr_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                                if hasattr(use_engine, 'recognize_with_lines'):
+                                    lines_bin = use_engine.recognize_with_lines(binary, lang=use_lang)
+                                    if lines_bin:
+                                        lines = lines_bin
+                                if not lines:
+                                    import pytesseract
+                                    txt = pytesseract.image_to_string(binary, lang=use_lang, config='--oem 3 --psm 6')
                                     if txt and len(txt.strip()) > 3:
                                         lines = [l.strip() for l in txt.split('\n') if l.strip()]
                             except Exception:
@@ -916,19 +1048,36 @@ class App(_BaseTk):
                         
                     except Exception as e:
                         import traceback
-                        print(f"Text error: {e}\n{traceback.format_exc()}")
+                        tb = traceback.format_exc()
+                        print(f"Text error: {e}\n{tb}")
+                        try:
+                            debug_dir = os.path.join(os.path.expanduser("~"), "Desktop", "TABDIL_debug")
+                            with open(os.path.join(debug_dir, "error.log"), "a", encoding="utf-8") as f:
+                                f.write(f"\nText error {path}: {e}\n{tb}\n")
+                        except Exception:
+                            pass
                         words, conf = [], 0
-                        lines = [f"خطا در پردازش دست‌نویس: {e}"]
+                        lines = [f"خطا: {e}"]
                     
                     if not lines:
+                        try:
+                            debug_dir = os.path.join(os.path.expanduser("~"), "Desktop", "TABDIL_debug")
+                            with open(os.path.join(debug_dir, "text_fail.log"), "a", encoding="utf-8") as f:
+                                f.write(f"\n--- {path} ---\n")
+                                f.write(f"ocr_img shape={ocr_img.shape if 'ocr_img' in locals() else 'N/A'} gray0 shape={gray0.shape}\n")
+                        except Exception:
+                            pass
                         lines = [
                             "(متنی تشخیص داده نشد)",
+                            f"اطلاعات دیباگ: کلمات={len(words) if 'words' in locals() else 0} شکل={ocr_img.shape if 'ocr_img' in locals() else 'N/A'}",
                             "پیشنهادات:",
                             "۱. زبان را 'فقط فارسی' بگذارید",
                             "۲. عکس واضح‌تر با نور بهتر",
                             "۳. حالت 'متن / دست‌نویس' انتخاب شود",
-                            "۴. موتور 'سبک (Tesseract)' بهتر است برای دست‌نویس",
-                            "۵. تیک 'بهبود کیفیت' فعال باشد"
+                            "۴. موتور 'سبک (Tesseract)' بهتر است",
+                            "۵. تیک 'بهبود کیفیت' فعال باشد",
+                            "۶. پوشه Desktop/TABDIL_debug را چک کنید",
+                            "۷. Check-Installation.bat را اجرا کنید"
                         ]
                     results.append({"name": name, "kind": "text", "lines": lines,
                                     "conf": conf, "file": path})

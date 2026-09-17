@@ -401,17 +401,18 @@ def build_paragraph_lines(words):
 
 
 def words_from_tesseract_data(data):
-    """تبدیل خروجی image_to_data به Word - با line_num"""
+    """تبدیل خروجی image_to_data به Word - با line_num - نسخه با فیلتر کمتر"""
     words = []
     n = len(data.get("text", []))
     for i in range(n):
         text = clean_ocr_word(data["text"][i])
         if not text:
             continue
-        if len(text) == 1 and text in ['|', '_', '-', '—', '–', '¦', 'l', 'I']:
+        # فقط کاراکترهای واقعاً بی‌معنی را فیلتر کن
+        if len(text) == 1 and text in ['|', '_', '—', '–', '¦']:
             try:
                 conf = float(data["conf"][i])
-                if conf < 40:
+                if conf < 30:  # اگر اطمینان کم و کاراکتر بی‌معنی
                     continue
             except:
                 pass
@@ -422,7 +423,7 @@ def words_from_tesseract_data(data):
             conf = -1.0
         if conf < 0:
             continue
-        if conf < 8:  # حداقل اطمینان کمتر برای دست‌نویس
+        if conf < 3:  # فیلتر خیلی کم - قبلاً 8 بود
             continue
             
         try:
@@ -430,7 +431,7 @@ def words_from_tesseract_data(data):
             y = int(data["top"][i])
             w = int(data["width"][i])
             h = int(data["height"][i])
-            if w < 2 or h < 2 or w > 5000 or h > 5000:
+            if w < 1 or h < 1 or w > 8000 or h > 8000:
                 continue
             block_num = int(data.get("block_num", [0]*n)[i])
             par_num = int(data.get("par_num", [0]*n)[i])
