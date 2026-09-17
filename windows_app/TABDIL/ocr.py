@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""لایه انتزاعی موتورهای OCR:
-  - TesseractEngine : سبک و آفلاین (پیش‌فرض)
-  - PaddleEngine   : دقیق‌تر، نصب اختیاری (PaddleOCR با مدل عربی/فارسی)
-  بهبود برای دست‌نویس: استفاده از image_to_string برای حفظ معنی، PSM بهینه، گروه‌بندی با line_num
+"""لایه انتزاعی موتورهای OCR - نسخه پایدار و سریع
+  - TesseractEngine : سبک و آفلاین
+  - PaddleEngine   : دقیق‌تر
+  فیکس هنگ: کاهش تعداد تست PSM، بهینه‌سازی سرعت
 """
 import os
 import glob
@@ -17,14 +17,12 @@ from .table import Word, words_from_tesseract_data
 from .util import TESSDATA_DIR, clean_ocr_word
 
 
-# ---------------------------------------------------------------- Tesseract
-
 class TesseractEngine:
     name = "tesseract"
     display_name = "Tesseract (سبک و آفلاین)"
 
     def __init__(self):
-        import pytesseract  # نصب‌شده با requirements
+        import pytesseract
         self._pytesseract = pytesseract
         exe = self._find_exe()
         if exe:
@@ -78,27 +76,18 @@ class TesseractEngine:
     @classmethod
     def is_available(cls):
         try:
-            import pytesseract  # noqa: F401
+            import pytesseract
         except Exception:
             return False, "کتابخانه pytesseract نصب نشده است. فایل Install.bat را اجرا کنید."
         exe = cls._find_exe()
         if not exe:
             return False, (
                 "برنامه Tesseract روی ویندوز پیدا نشد.\n\n"
-                "راه‌حل‌ها:\n"
-                "۱) فایل Install-Tesseract.bat را اجرا کنید (نصب خودکار با winget یا دانلود).\n"
+                "۱) فایل Install-Tesseract.bat را اجرا کنید\n"
                 "۲) یا دستی نصب کنید: https://github.com/UB-Mannheim/tesseract/wiki\n"
-                "   مسیر پیش‌فرض: C:\\Program Files\\Tesseract-OCR\\tesseract.exe\n"
-                "۳) اگر قبلاً نصب کرده‌اید ولی برنامه پیدا نمی‌کند، در پیام بعدی مسیر tesseract.exe را دستی انتخاب کنید.\n"
-                "۴) برای عیب‌یابی Check-Installation.bat را اجرا کنید."
             )
         if not os.path.exists(os.path.join(TESSDATA_DIR, "fas.traineddata")):
-            return False, "فایل زبان فارسی (fas.traineddata) کنار برنامه پیدا نشد. پوشه TABDIL/tessdata را چک کنید."
-        try:
-            import subprocess
-            subprocess.run([exe, "--version"], capture_output=True, timeout=5)
-        except Exception:
-            pass
+            return False, "فایل زبان فارسی (fas.traineddata) کنار برنامه پیدا نشد."
         return True, exe
 
     def _recognize_psm(self, gray_img, lang, psm, oem=3, extra_config=""):
@@ -119,201 +108,126 @@ class TesseractEngine:
         return text
 
     def recognize(self, gray_img, lang="fas+eng", table_mode=True):
+        # برای سرعت، فقط 1-2 کانفیگ تست می شود نه 16 تا
         if table_mode:
-            # جدول: PSM 6 بهترین است
-            data = self._recognize_psm(gray_img, lang, 6, oem=3)
-            words = words_from_tesseract_data(data)
-            conf = float(np.mean([w.conf for w in words])) if words else 0.0
-            return words, conf
+            # جدول: PSM 6 سریع و دقیق
+            try:
+                data = self._recognize_psm(gray_img, lang, 6, oem=3)
+                words = words_from_tesseract_data(data)
+                if words:
+                    conf = float(np.mean([w.conf for w in words])) if words else 0.0
+                    return words, conf
+            except Exception as e:
+                print(f"Table PSM6 failed: {e}")
+            
+            # fallback PSM 3
+            try:
+                data = self._recognize_psm(gray_img, lang, 3, oem=3)
+                words = words_from_tesseract_data(data)
+                conf = float(np.mean([w.conf for w in words])) if words else 0.0
+                return words, conf
+            except Exception:
+                return [], 0.0
         else:
-            # دست‌نویس/متن: استراتژی جدید - استفاده از image_to_string برای حفظ معنی
-            # و image_to_data برای اطمینان و موقعیت
-            
-            # برای دست‌نویس فارسی، فقط فارسی بهتر از فارسی+انگلیسی است
-            # اگر lang fas+eng است و متن فارسی به نظر می رسد، fas را هم امتحان کن
-            langs_to_try = [lang]
-            if lang == "fas+eng":
-                langs_to_try.append("fas")
-                langs_to_try.append("eng")  # شاید انگلیسی هم باشد
-            
+            # دست‌نویس/متن: از image_to_string برای حفظ معنی استفاده کن
+            # فقط 2 کانفیگ برتر برای سرعت
             best_words = []
-            best_lines = []
-            best_score = -1
             best_text = ""
+            best_conf = 0
             
-            # کانفیگ‌های مختلف برای دست‌نویس
+            # کانفیگ‌های بهینه برای دست‌نویس فارسی
             configs = [
-                (6, 1, "-c preserve_interword_spaces=1"),  # PSM 6, LSTM only, حفظ فاصله - بهترین برای پاراگراف فارسی
+                (6, 1, "-c preserve_interword_spaces=1"),  # بهترین برای پاراگراف فارسی
                 (6, 3, "-c preserve_interword_spaces=1"),
-                (4, 1, "-c preserve_interword_spaces=1"),  # PSM 4 برای ستون تکی
-                (4, 3, ""),
-                (3, 1, ""),  # خودکار
-                (3, 3, ""),
-                (11, 1, ""), # متن پراکنده
-                (12, 1, ""),
+                (3, 1, ""),
             ]
             
-            for try_lang in langs_to_try:
+            # برای فارسی، فقط fas را امتحان کن اگر fas+eng بود
+            langs = [lang]
+            if lang == "fas+eng":
+                langs = ["fas", "fas+eng"]  # اول فقط فارسی
+            
+            for try_lang in langs:
                 for psm, oem, extra in configs:
                     try:
-                        # اول متن کامل را بگیر - این معنی را بهتر حفظ می کند
+                        # متن مستقیم - سریع و معنی را حفظ می کند
                         text = self._recognize_string(gray_img, try_lang, psm, oem, extra)
-                        if not text or not text.strip():
+                        if not text or len(text.strip()) < 5:
                             continue
                         
-                        # حالا data برای کلمات و اطمینان
+                        # کلمات برای اطمینان
                         data = self._recognize_psm(gray_img, try_lang, psm, oem, extra)
                         words = words_from_tesseract_data(data)
-                        if not words:
-                            # اگر کلمه‌ای پیدا نشد ولی متن هست، از متن استفاده کن
-                            # یک Word ساختگی برای هر خط
-                            lines = [l.strip() for l in text.split('\n') if l.strip()]
-                            if lines:
-                                # امتیاز بر اساس طول متن
-                                score = len(text) * 0.5
-                                if score > best_score:
-                                    best_score = score
-                                    best_text = text
-                                    best_lines = lines
-                                    best_words = words
-                            continue
                         
-                        # امتیازدهی
-                        good = [w for w in words if w.conf >= 30]
-                        medium = [w for w in words if w.conf >= 15]
-                        total_chars = sum(len(w.text) for w in words)
-                        avg_conf = float(np.mean([w.conf for w in words])) if words else 0
-                        good_avg = float(np.mean([w.conf for w in good])) if good else 0
-                        
-                        # برای دست‌نویس، تعداد خطوط و طول متن مهم است
-                        # متن مستقیم از image_to_string معمولاً بهتر است
-                        text_len = len(text.strip())
-                        line_count = len([l for l in text.split('\n') if l.strip()])
-                        
-                        # امتیاز ترکیبی
-                        # برای دست‌نویس فارسی، متنی که از image_to_string می آید و طولانی است، بهتر است
-                        score = (
-                            len(good) * 8 + 
-                            len(medium) * 2 + 
-                            good_avg * 0.4 + 
-                            avg_conf * 0.2 +
-                            min(text_len / 8, 30) +
-                            line_count * 2
-                        )
-                        
-                        # اگر زبان فارسی است و متن فارسی دارد، امتیاز بیشتر
+                        # امتیاز ساده
+                        total_chars = len(text.strip())
                         persian_chars = len(re.findall(r'[ء-ی]', text))
-                        if persian_chars > text_len * 0.3:
-                            score += 10
+                        avg_conf = float(np.mean([w.conf for w in words])) if words else 0
                         
-                        if score > best_score:
-                            best_score = score
+                        score = total_chars + persian_chars + avg_conf
+                        if persian_chars > total_chars * 0.2:
+                            score += 20  # فارسی بیشتر امتیاز بیشتر
+                        
+                        if score > best_conf:
+                            best_conf = score
                             best_words = words
                             best_text = text
-                            # خطوط را از text بگیر، نه از clustering
-                            best_lines = [l.strip() for l in text.split('\n') if l.strip()]
                             
-                    except Exception as e:
+                            # اگر نتیجه خوبی گرفتیم، ادامه نده برای سرعت
+                            if total_chars > 50 and persian_chars > 10 and avg_conf > 30:
+                                break
+                    except Exception:
                         continue
+                if best_conf > 50:
+                    break
             
-            # اگر بهترین متن را از image_to_string گرفتیم، آن را به Word تبدیل کن برای سازگاری
-            # اما برای حفظ معنی، خطوط را از best_text می گیریم
-            # در نهایت، words را برمی گردانیم ولی در app.py از best_lines استفاده خواهیم کرد
-            # برای فعلاً، اگر best_text وجود دارد، کلمات را از آن بسازیم
+            # اگر متنی داریم ولی کلمه نداریم، از متن کلمات بساز
             if best_text and not best_words:
-                # از متن، کلمات ساختگی بساز
-                # این برای حالت fallback است
-                pass
-            
-            # اگر هنوز کلمه‌ای نداریم، از بهترین استفاده کن
-            if not best_words and best_lines:
-                # کلمات ساختگی از خطوط
                 words = []
                 y = 0
-                for line in best_lines:
-                    # هر خط را به کلمات تقسیم کن
-                    for x_idx, w_text in enumerate(line.split()):
-                        words.append(Word(x=x_idx*100, y=y, w=80, h=20, text=w_text, conf=50))
+                for line in best_text.split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    x = 1000
+                    for wt in line.split():
+                        words.append(Word(x=x, y=y, w=len(wt)*15, h=18, text=wt, conf=40,
+                                          block_num=0, par_num=0, line_num=y//30, word_num=x))
+                        x -= 100
                     y += 30
-                conf = 50.0
+                conf = 40.0
                 return words, conf
             
             conf = float(np.mean([w.conf for w in best_words])) if best_words else 0.0
-            
-            # نکته مهم: برای دست‌نویس، اگر best_text داریم، آن را به عنوان خطوط در نظر بگیر
-            # اما چون تابع باید words برگرداند، words را برمی گردانیم
-            # و در table.py build_paragraph_lines را بهبود می دهیم که از Tesseract line grouping استفاده کند
-            # برای الان، یک ویژگی اضافه می کنیم: اگر best_text طولانی است، آن را در words ذخیره می کنیم
-            # به صورت یک Word خاص که کل متن را دارد
-            
-            # برای حفظ معنی، بهترین کار این است که best_text را به عنوان مرجع نگه داریم
-            # و در build_paragraph_lines از آن استفاده کنیم
-            # فعلاً، اگر best_lines وجود دارد، یک Word برای هر خط با موقعیت درست بسازیم
-            if best_lines and len(best_lines) > 1:
-                # اگر best_lines از image_to_string بهتر است، از آن استفاده کن
-                # کلمات را بر اساس best_lines بازسازی کن
-                reconstructed_words = []
-                y_pos = 0
-                for line_idx, line_text in enumerate(best_lines):
-                    # هر خط را به کلمات تقسیم کن و موقعیت بده
-                    x_pos = 1000  # شروع از راست برای فارسی
-                    for word_text in line_text.split():
-                        if not word_text.strip():
-                            continue
-                        reconstructed_words.append(
-                            Word(x=x_pos, y=y_pos, w=len(word_text)*20, h=20, 
-                                 text=word_text, conf=60)
-                        )
-                        x_pos -= len(word_text)*20 + 20  # به چپ حرکت کن برای فارسی
-                    y_pos += 35
-                
-                # اگر reconstructed بهتر است (تعداد کلمات بیشتر یا معنی بهتر)، از آن استفاده کن
-                if len(reconstructed_words) > len(best_words) * 0.5:
-                    # ترکیب: کلمات اصلی + بازسازی شده را مقایسه کن
-                    # برای دست‌نویس، بازسازی از image_to_string معمولاً بهتر است
-                    if len(best_text) > sum(len(w.text) for w in best_words):
-                        best_words = reconstructed_words
-            
             return best_words, conf
 
     def recognize_with_lines(self, gray_img, lang="fas+eng"):
-        """برای دست‌نویس: مستقیم خطوط را از Tesseract بگیر - بهترین برای حفظ معنی"""
-        best_lines = []
-        best_conf = 0
-        
-        configs = [
-            (6, 1, "-c preserve_interword_spaces=1"),
-            (6, 3, "-c preserve_interword_spaces=1"),
-            (4, 1, ""),
-            (3, 1, ""),
-        ]
-        
-        for psm, oem, extra in configs:
-            try:
-                text = self._recognize_string(gray_img, lang, psm, oem, extra)
-                if not text or not text.strip():
+        """مستقیم خطوط را بگیر - سریع"""
+        try:
+            # بهترین کانفیگ برای دست‌نویس
+            text = self._recognize_string(gray_img, lang, 6, 1, "-c preserve_interword_spaces=1")
+            if not text or len(text.strip()) < 5:
+                text = self._recognize_string(gray_img, lang, 6, 3, "-c preserve_interword_spaces=1")
+            if not text or len(text.strip()) < 5:
+                text = self._recognize_string(gray_img, lang, 3, 1, "")
+            
+            lines = [l.strip() for l in text.split('\n') if l.strip()]
+            # فیلتر نویز
+            filtered = []
+            for l in lines:
+                if re.match(r'^[|_\-—–¦\s]+$', l):
                     continue
-                lines = [l.strip() for l in text.split('\n') if l.strip()]
-                if not lines:
+                if len(l) < 2:
                     continue
-                
-                # امتیاز بر اساس طول و فارسی بودن
-                total_chars = sum(len(l) for l in lines)
-                persian_chars = len(re.findall(r'[ء-ی]', text))
-                score = total_chars + persian_chars * 0.5 + len(lines) * 5
-                
-                if score > best_conf:
-                    best_conf = score
-                    best_lines = lines
-            except:
-                continue
-        
-        return best_lines
+                filtered.append(l)
+            return filtered
+        except Exception:
+            return []
 
     def quick_conf(self, gray_img, lang="fas+eng"):
         import cv2
         h, w = gray_img.shape[:2]
-        s = min(1.0, 1000.0 / max(h, w))
+        s = min(1.0, 800.0 / max(h, w))
         small = cv2.resize(gray_img, None, fx=s, fy=s,
                            interpolation=cv2.INTER_AREA) if s < 1.0 else gray_img
         config = f'--tessdata-dir "{TESSDATA_DIR}" --oem 3 --psm 11'
@@ -339,7 +253,7 @@ class TesseractEngine:
         import cv2
         import re
         h, w = gray_img.shape[:2]
-        s = min(1.0, 1400.0 / max(h, w))
+        s = min(1.0, 1200.0 / max(h, w))
         small = cv2.resize(gray_img, None, fx=s, fy=s,
                            interpolation=cv2.INTER_AREA) if s < 1.0 else gray_img
         try:
@@ -357,29 +271,26 @@ class TesseractEngine:
             return None, None
 
 
-# ------------------------------------------------------------------ Paddle
-
+# Paddle بخش بدون تغییر زیاد - فقط سریع‌تر
 def _paddle_model_root():
     home = os.path.expanduser("~")
-    candidates = [
+    return [
         os.path.join(home, ".paddleocr"),
         os.path.join(home, ".paddlex"),
         os.path.join(home, ".paddle", "ocr"),
     ]
-    return candidates
 
 def _local_paddle_model_candidates():
     from .util import app_base_dir
     base = app_base_dir()
     here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
+    return [
         os.path.join(base, "paddle_models"),
         os.path.join(base, "TABDIL", "paddle_models"),
         os.path.join(here, "paddle_models"),
         os.path.join(here, "..", "paddle_models"),
         os.path.join(os.path.dirname(base), "paddle_models"),
     ]
-    return candidates
 
 def _paddle_models_exist():
     for root in _paddle_model_root():
@@ -425,14 +336,6 @@ def _find_local_paddle_models():
                 if os.path.exists(os.path.join(sub, "inference.pdmodel")):
                     result["rec_model_dir"] = sub
                     break
-                if os.path.basename(sub) == "rec":
-                    for dirpath, dirnames, filenames in os.walk(sub):
-                        if "inference.pdmodel" in filenames and ("arabic" in dirpath.lower() or "rec" in dirpath.lower()):
-                            if "arabic" in dirpath.lower():
-                                result["rec_model_dir"] = dirpath
-                                break
-                    if "rec_model_dir" in result:
-                        break
         if "cls_model_dir" not in result:
             for sub in [
                 os.path.join(root, "cls", "ch", "ch_ppocr_mobile_v2.0_cls_infer"),
@@ -443,11 +346,6 @@ def _find_local_paddle_models():
                 if os.path.exists(os.path.join(sub, "inference.pdmodel")):
                     result["cls_model_dir"] = sub
                     break
-                if os.path.basename(sub) == "cls":
-                    for dirpath, dirnames, filenames in os.walk(sub):
-                        if "inference.pdmodel" in filenames and "cls" in dirpath.lower():
-                            result["cls_model_dir"] = dirpath
-                            break
     home = os.path.expanduser("~")
     whl_root = os.path.join(home, ".paddleocr", "whl")
     if os.path.exists(whl_root):
@@ -471,7 +369,6 @@ def _find_local_paddle_models():
 class PaddleEngine:
     name = "paddle"
     display_name = "PaddleOCR (دقیق‌تر)"
-
     _shared = {}
     _lock = threading.Lock()
 
@@ -516,26 +413,21 @@ class PaddleEngine:
             major = 2
         if major >= 3:
             raise RuntimeError(
-                "نسخه نصب‌شده PaddleOCR نسخه ۳ است و مدل عربی/فارسی را با این "
-                "برنامه پشتیبانی نمی‌کند.\n"
-                "لطفاً فایل Install-PaddleOCR.bat را دوباره اجرا کنید تا نسخه سازگار (2.8.1) نصب شود.\n"
-                "اگر همچنان خطا داشتید، پوشه .venv را حذف و دوباره Install.bat و سپس Install-PaddleOCR.bat را اجرا کنید.")
-
-        try:
-            import numpy as _np
-            import cv2 as _cv2
-            _cv_ver = _cv2.__version__
-            if _np.__version__.startswith("1.") and (_cv_ver.startswith("4.14") or _cv_ver.startswith("4.15") or _cv_ver.startswith("5.")):
-                raise RuntimeError(
-                    f"ناسازگاری نسخه‌ها: numpy {_np.__version__} با opencv {_cv_ver} سازگار نیست.\n"
-                    "این خطا به VPN ربط ندارد - مشکل نسخه کتابخانه‌هاست.\n"
-                    "لطفاً Fix-OpenCV-Conflict.bat یا Install-PaddleOCR.bat را دوباره اجرا کنید.")
-        except RuntimeError:
-            raise
-        except Exception:
-            pass
+                "نسخه PaddleOCR 3 پشتیبانی نمی‌شود. Install-PaddleOCR.bat را اجرا کنید.")
 
         local_models = _find_local_paddle_models()
+        has_cache = _paddle_models_exist()
+        
+        # اگر هیچ مدلی نداریم، سریع خطا بده بدون تلاش برای دانلود (که هنگ می کند)
+        if not local_models and not has_cache:
+            raise RuntimeError(
+                "مدل‌های PaddleOCR هنوز دانلود نشده‌اند.\n\n"
+                "این مدل‌ها از Baidu دانلود می‌شوند که در ایران فیلتر است و باعث هنگ می‌شود.\n\n"
+                "راه‌حل فوری: از موتور سبک (Tesseract) استفاده کنید - آفلاین و سریع است\n"
+                "یا Download-PaddleModels-GitHub.bat را اجرا کنید (از گیت‌هاب، بدون VPN)\n"
+                "اگر 3 فایل tar دستی دارید، در paddle_models بریزید و Setup-PaddleModels-Local.bat"
+            )
+
         kwargs = dict(lang=lang, show_log=False, use_angle_cls=True)
         if local_models:
             if "det_model_dir" in local_models:
@@ -552,9 +444,6 @@ class PaddleEngine:
                 kwargs.pop("use_angle_cls")
             if "show_log" not in params:
                 kwargs.pop("show_log")
-            if "text_detection_model_dir" in params:
-                kwargs.setdefault("use_doc_orientation_classify", False)
-                kwargs.setdefault("use_doc_unwarping", False)
         except Exception:
             pass
 
@@ -562,64 +451,34 @@ class PaddleEngine:
             return PaddleOCR(**kwargs)
         except Exception as e:
             err = str(e).lower()
-            if any(k in err for k in ["download", "urlopen", "timeout", "connection", "ssl", "bcebos", "http", "404", "403"]):
+            if any(k in err for k in ["download", "urlopen", "timeout", "connection", "ssl", "bcebos"]):
                 raise RuntimeError(
-                    "دانلود مدل‌های PaddleOCR با خطا مواجه شد.\n\n"
-                    "این مدل‌ها از سرور Baidu (paddleocr.bj.bcebos.com) دانلود می‌شوند که در ایران اغلب فیلتر یا بسیار کند است.\n\n"
-                    "راه‌حل‌های بدون VPN (جدید):\n"
-                    "۱) فایل Download-PaddleModels-GitHub.bat را اجرا کنید - مدل‌ها از گیت‌هاب (قابل دسترس در ایران) دانلود می‌شوند.\n"
-                    "۲) فایل PADDLE_MODELS_MANUAL.md را بخوانید - لینک‌های مستقیم + آموزش قرار دادن دستی مدل‌ها در پوشه paddle_models/\n"
-                    "۳) یا فعلاً از موتور سبک Tesseract استفاده کنید (موتور 'سبک' کاملاً آفلاین است).\n\n"
-                    "راه‌حل با VPN:\n"
-                    "- با VPN فایل Download-PaddleModels.bat را اجرا کنید.\n"
-                    "- اگر VPN جواب نمی‌دهد، مدل‌ها را دستی دانلود و در paddle_models/ قرار دهید.\n\n"
-                    f"خطای اصلی: {e}"
-                ) from e
-            if "arabic" in err and "no models" in err:
-                raise RuntimeError(
-                    "مدل عربی/فارسی برای PaddleOCR نسخه ۳ پیدا نشد.\n"
-                    "لطفاً نسخه 2.8.1 را نصب کنید: Install-PaddleOCR.bat را اجرا کنید.\n\n"
-                    f"خطای اصلی: {e}"
+                    "دانلود مدل PaddleOCR هنگ کرده (نیاز به VPN).\n"
+                    "از موتور سبک (Tesseract) استفاده کنید یا Download-PaddleModels-GitHub.bat\n"
+                    f"خطا: {e}"
                 ) from e
             raise
 
     @classmethod
     def is_available(cls):
         try:
-            import paddleocr  # noqa: F401
-            import paddle  # noqa: F401
+            import paddleocr
+            import paddle
         except Exception as ex:
-            return False, ("موتور دقیق PaddleOCR نصب نیست. برای نصب، فایل "
-                           "Install-PaddleOCR.bat را اجرا کنید (حدود ۱ گیگابایت، "
-                           "نیاز به اینترنت در اولین اجرا).\n"
-                           f"جزئیات: {ex}")
+            return False, f"PaddleOCR نصب نیست. Install-PaddleOCR.bat را اجرا کنید.\n{ex}"
         try:
             import paddleocr as _p
             ver = getattr(_p, "__version__", "0") or "0"
             major = int(ver.split(".")[0])
             if major >= 3:
-                return False, ("نسخه PaddleOCR شما نسخه ۳ است که مدل عربی/فارسی را پشتیبانی نمی‌کند.\n"
-                               "لطفاً Install-PaddleOCR.bat را دوباره اجرا کنید تا نسخه 2.8.1 نصب شود.")
+                return False, "نسخه 3 پشتیبانی نمی‌شود. Install-PaddleOCR.bat"
         except Exception:
             pass
-        try:
-            import numpy as _np
-            import cv2 as _cv2
-            _cv_ver = _cv2.__version__
-            if _np.__version__.startswith("1.") and (_cv_ver.startswith("4.14") or _cv_ver.startswith("4.15") or _cv_ver.startswith("5.") or _cv_ver >= "4.14"):
-                return False, (f"ناسازگاری نسخه‌ها: numpy {_np.__version__} با opencv {_cv_ver}\n"
-                               "این خطا به VPN ربط ندارد.\n"
-                               "لطفاً Fix-OpenCV-Conflict.bat یا Install-PaddleOCR.bat را دوباره اجرا کنید.\n"
-                               "نسخه درست: numpy 1.26.4 + opencv-contrib-python 4.11.0.86")
-        except Exception:
-            pass
-
         local = _find_local_paddle_models()
         if local and "rec_model_dir" in local and "det_model_dir" in local:
-            return True, f"paddleocr (local models: {len(local)} found)"
-
+            return True, f"paddleocr (local {len(local)} models)"
         if not _paddle_models_exist():
-            return True, "paddleocr (مدل‌ها در اولین اجرا دانلود می‌شوند - نیاز به VPN در ایران، یا از GitHub دانلود کنید: Download-PaddleModels-GitHub.bat)"
+            return True, "paddleocr (مدل‌ها دانلود می‌شوند - نیاز به VPN یا GitHub)"
         return True, "paddleocr"
 
     def recognize(self, gray_img, lang="fas+eng", table_mode=True):
@@ -632,7 +491,7 @@ class PaddleEngine:
             ys = [p[1] for p in box]
             x, y = int(min(xs)), int(min(ys))
             w, h = int(max(xs) - x), int(max(ys) - y)
-            if score < 0.3 and len(text.strip()) < 2:
+            if score < 0.25 and len(text.strip()) < 2:
                 continue
             words.append(Word(x=x, y=y, w=max(1, w), h=max(1, h),
                               text=clean_ocr_word(text), conf=float(score) * 100.0))
@@ -661,14 +520,11 @@ class PaddleEngine:
             err = str(e).lower()
             if any(k in err for k in ["download", "bcebos", "timeout", "connection"]):
                 raise RuntimeError(
-                    "خطا در دانلود مدل PaddleOCR (احتمالاً نیاز به VPN در ایران).\n"
-                    "لطفاً Download-PaddleModels-GitHub.bat را امتحان کنید (بدون نیاز به Baidu) یا از موتور سبک استفاده کنید.\n\n"
-                    f"خطای اصلی: {e}"
+                    f"خطا در دانلود مدل PaddleOCR. Download-PaddleModels-GitHub.bat را امتحان کنید.\n{e}"
                 ) from e
             raise
         if not result:
             return out
-
         first = result[0]
         if first is not None and hasattr(first, "rec_texts"):
             polys = getattr(first, "rec_polys", None) or getattr(first, "dt_polys", None)
@@ -677,7 +533,6 @@ class PaddleEngine:
             for poly, text, score in zip(polys, texts, scores):
                 out.append(([[float(p[0]), float(p[1])] for p in poly], text, float(score)))
             return out
-
         items = first if isinstance(first, list) else result
         for item in items or []:
             try:
@@ -696,7 +551,6 @@ ENGINES = {
     "tesseract": TesseractEngine,
     "paddle": PaddleEngine,
 }
-
 
 def get_engine(engine_name):
     cls = ENGINES.get(engine_name, TesseractEngine)

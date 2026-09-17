@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
-"""پیش‌پردازش عکس: خواندن امن (مسیر فارسی)، حذف کجی، بهبود کنتراست و بزرگ‌نمایی.
-بهبود برای دست‌نویس فارسی: حفظ اتصالات حروف، کنتراست ملایم
-"""
+"""پیش‌پردازش عکس - نسخه سریع و پایدار"""
 import cv2
 import numpy as np
 
 
 def imread_unicode(path: str) -> np.ndarray:
-    """cv2.imread با مسیرهای دارای کاراکتر فارسی/یونیکد کار می‌کند."""
     data = np.fromfile(path, dtype=np.uint8)
     img = cv2.imdecode(data, cv2.IMREAD_COLOR)
     if img is None:
@@ -16,7 +13,6 @@ def imread_unicode(path: str) -> np.ndarray:
 
 
 def rotate_image(image: np.ndarray, angle: float, border=(255, 255, 255)) -> np.ndarray:
-    """چرخش تصویر حول مرکز با زاویه درجه"""
     h, w = image.shape[:2]
     m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)
     cos, sin = abs(m[0, 0]), abs(m[0, 1])
@@ -33,45 +29,44 @@ def rotate_image(image: np.ndarray, angle: float, border=(255, 255, 255)) -> np.
 
 
 def estimate_skew(gray: np.ndarray) -> float:
-    """تخمین زاویه کجی"""
+    # برای سرعت، روی تصویر کوچک تخمین بزن
     h, w = gray.shape
-    inv = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-    klen = max(30, int(w * 0.45))
+    # اگر تصویر خیلی بزرگ است، کوچک کن برای سرعت
+    if max(h, w) > 1500:
+        scale = 1000.0 / max(h, w)
+        small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    else:
+        small = gray
+        scale = 1.0
+    
+    h_s, w_s = small.shape
+    inv = cv2.threshold(small, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    klen = max(30, int(w_s * 0.45))
     hor = cv2.morphologyEx(
         inv, cv2.MORPH_OPEN,
         cv2.getStructuringElement(cv2.MORPH_RECT, (klen, 1)),
     )
     pts = cv2.findNonZero(hor)
-    if pts is not None and len(pts) > 200:
+    if pts is not None and len(pts) > 100:
         line = cv2.fitLine(pts, cv2.DIST_L1, 0.0, 0.01, 0.01)
         vx, vy = float(line[0]), float(line[1])
         angle = np.degrees(np.arctan2(vy, vx))
         if abs(angle) <= 8:
             return angle
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180.0, threshold=160,
-                            minLineLength=int(w * 0.25), maxLineGap=20)
-    angles = []
-    if lines is not None:
-        for ln in lines:
-            x1, y1, x2, y2 = ln[0]
-            a = np.degrees(np.arctan2(y2 - y1, x2 - x1))
-            if abs(a) < 12:
-                angles.append(a)
-    if angles:
-        return float(np.median(angles))
     return 0.0
 
 
-def deskew(gray: np.ndarray, max_angle: float = 8.0) -> np.ndarray:
-    a = estimate_skew(gray)
-    if abs(a) > 0.15:
-        gray = rotate_image(gray, a)
+def deskew(gray: np.ndarray) -> np.ndarray:
+    try:
+        a = estimate_skew(gray)
+        if abs(a) > 0.3:
+            gray = rotate_image(gray, a)
+    except Exception:
+        pass
     return gray
 
 
 def load_gray(path_or_img):
-    """خواندن عکس و تبدیل به خاکستری."""
     if isinstance(path_or_img, str):
         img = imread_unicode(path_or_img)
     elif hasattr(path_or_img, 'ndim') and path_or_img.ndim == 3:
@@ -81,80 +76,57 @@ def load_gray(path_or_img):
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 
-def remove_shadow_simple(gray):
-    """حذف سایه ساده - بدون شکستن اتصالات حروف فارسی"""
-    try:
-        # برای دست‌نویس فارسی، از فیلتر بزرگ برای تخمین پس‌زمینه استفاده کن
-        # اما ملایم‌تر از قبل
-        dilated = cv2.dilate(gray, np.ones((7,7), np.uint8))
-        bg = cv2.medianBlur(dilated, 21)
-        diff = 255 - cv2.absdiff(gray, bg)
-        # نرمال‌سازی ملایم
-        norm = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX)
-        # ترکیب: 80% اصلی + 20% بهبود یافته
-        result = cv2.addWeighted(gray, 0.8, norm, 0.2, 0)
-        return result
-    except Exception:
-        return gray
-
+def _limit_size(gray, max_w=2200, max_h=3000):
+    """اگر عکس خیلی بزرگ است، کوچک کن تا هنگ نکند"""
+    h, w = gray.shape[:2]
+    if w > max_w or h > max_h:
+        scale = min(max_w / float(w), max_h / float(h))
+        if scale < 1.0:
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            gray = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            return gray, scale
+    return gray, 1.0
 
 def enhance_handwritten(gray):
-    """بهبود مخصوص دست‌نویس فارسی - حفظ اتصالات"""
-    # 1. حذف کجی
+    """بهبود سریع برای دست‌نویس - بدون هنگ"""
+    # اول سایز را محدود کن
+    gray, _ = _limit_size(gray, max_w=2000, max_h=2800)
+    
     try:
         gray = deskew(gray)
     except Exception:
         pass
     
-    # 2. افزایش اندازه - برای دست‌نویس فارسی مهم است
-    # Tesseract برای متن ریز ضعیف است
     h, w = gray.shape
-    target_w = 2200  # کمی کمتر از قبل تا نویز زیاد نشود
+    # برای دست‌نویس، بزرگ‌نمایی ملایم - نه خیلی زیاد که هنگ کند
+    target_w = 1800
     scale = 1.0
     if w < target_w:
-        scale = min(2.2, target_w / float(w))
-    if scale > 1.05:
-        gray = cv2.resize(gray, None, fx=scale, fy=scale,
-                          interpolation=cv2.INTER_CUBIC)
+        scale = min(1.6, target_w / float(w))
+        if scale > 1.1:
+            gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     
-    # 3. حذف سایه ملایم (مهم برای عکس‌های موبایل)
+    # CLAHE ملایم و سریع
     try:
-        # فقط اگر تصویر سایه‌دار باشد
-        mean_val = np.mean(gray)
-        std_val = np.std(gray)
-        # اگر کنتراست کم و روشنایی متوسط باشد، سایه‌دار است
-        if std_val < 50 and mean_val > 100 and mean_val < 200:
-            gray = remove_shadow_simple(gray)
-    except Exception:
-        pass
-    
-    # 4. CLAHE ملایم - برای دست‌نویس فارسی، کنتراست زیاد حروف را می‌شکند
-    try:
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 8))
         gray = clahe.apply(gray)
     except Exception:
         pass
     
-    # 5. برای دست‌نویس، باینری نکن - Tesseract با خاکستری بهتر کار می کند
-    # به خصوص برای فارسی متصل
-    # فقط نویز را کم کن
+    # نویز کم - سریع (h کوچکتر = سریعتر)
     try:
-        # نویز کم برای حفظ جزئیات دست‌نویس
-        gray = cv2.fastNlMeansDenoising(gray, h=5)
+        gray = cv2.fastNlMeansDenoising(gray, None, 4, 7, 21)
     except Exception:
-        pass
+        try:
+            gray = cv2.fastNlMeansDenoising(gray, h=4)
+        except Exception:
+            pass
     
-    # 6. شارپ کردن ملایم برای دست‌نویس
+    # شارپ ملایم
     try:
-        blur = cv2.GaussianBlur(gray, (0, 0), 1.5)
-        gray = cv2.addWeighted(gray, 1.3, blur, -0.3, 0)
-    except Exception:
-        pass
-    
-    # 7. افزایش کنتراست نهایی ملایم
-    try:
-        # نرمال‌سازی محدوده
-        gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+        blur = cv2.GaussianBlur(gray, (0, 0), 1.0)
+        gray = cv2.addWeighted(gray, 1.15, blur, -0.15, 0)
     except Exception:
         pass
     
@@ -162,11 +134,13 @@ def enhance_handwritten(gray):
 
 
 def enhance_gray(gray, enhance: bool = True, polish: bool = True, handwritten: bool = False):
-    """بهبود تصویر خاکستری."""
     if handwritten:
         gray_enhanced, scale = enhance_handwritten(gray)
         color = cv2.cvtColor(gray_enhanced, cv2.COLOR_GRAY2BGR)
         return gray_enhanced, color, scale
+    
+    # محدودیت سایز برای جدول هم
+    gray, _ = _limit_size(gray, max_w=2200, max_h=3000)
     
     scale = 1.0
     if enhance:
@@ -175,34 +149,44 @@ def enhance_gray(gray, enhance: bool = True, polish: bool = True, handwritten: b
         except Exception:
             pass
         h, w = gray.shape
-        target_w = 2000
+        target_w = 1800
         if w < target_w:
-            scale = min(2.0, target_w / float(w))
-        if scale > 1.05:
-            gray = cv2.resize(gray, None, fx=scale, fy=scale,
-                              interpolation=cv2.INTER_CUBIC)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        gray = clahe.apply(gray)
+            scale = min(1.5, target_w / float(w))
+            if scale > 1.1:
+                gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        try:
+            clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+        except Exception:
+            pass
         if polish:
             try:
-                gray = cv2.fastNlMeansDenoising(gray, h=9)
+                gray = cv2.fastNlMeansDenoising(gray, None, 6, 7, 21)
+            except Exception:
+                try:
+                    gray = cv2.fastNlMeansDenoising(gray, h=6)
+                except Exception:
+                    pass
+            try:
+                blur = cv2.GaussianBlur(gray, (0, 0), 1.5)
+                gray = cv2.addWeighted(gray, 1.2, blur, -0.2, 0)
             except Exception:
                 pass
-            blur = cv2.GaussianBlur(gray, (0, 0), 3)
-            gray = cv2.addWeighted(gray, 1.4, blur, -0.4, 0)
 
     color = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     return gray, color, scale
 
 
 def polish_gray(gray):
-    """مرحله نهایی مخصوص OCR"""
     try:
-        gray = cv2.fastNlMeansDenoising(gray, h=9)
+        gray = cv2.fastNlMeansDenoising(gray, h=7)
     except Exception:
         pass
-    blur = cv2.GaussianBlur(gray, (0, 0), 3)
-    return cv2.addWeighted(gray, 1.4, blur, -0.4, 0)
+    try:
+        blur = cv2.GaussianBlur(gray, (0, 0), 2)
+        return cv2.addWeighted(gray, 1.3, blur, -0.3, 0)
+    except Exception:
+        return gray
 
 
 def enhance_image(path_or_img, enhance: bool = True):

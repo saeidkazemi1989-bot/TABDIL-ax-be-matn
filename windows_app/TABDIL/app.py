@@ -705,24 +705,47 @@ class App(_BaseTk):
             q.put(("progress", i / total))
             try:
                 raw = load_gray(path)
-                # تشخیص خودکار جهت (۰/۹۰/۱۸۰/۲۷۰)
-                osd = engine.osd_degrees(raw)
+                # اگر عکس خیلی بزرگ است، اول کوچک کن تا هنگ نکند
                 try:
-                    gray0, rot_k, _was_table = upright(
-                        raw,
-                        quick_ocr_conf=lambda g: engine.quick_conf(g, st["lang"]),
-                        osd_result=osd)
+                    import cv2
+                    h0, w0 = raw.shape[:2]
+                    if max(h0, w0) > 2400:
+                        scale0 = 2000.0 / max(h0, w0)
+                        raw = cv2.resize(raw, None, fx=scale0, fy=scale0, interpolation=cv2.INTER_AREA)
+                except Exception:
+                    pass
+                
+                # تشخیص خودکار جهت - برای سرعت، برای متن از OSD فقط استفاده کن نه OCR سریع
+                osd = None
+                try:
+                    # OSD هم ممکن است کند باشد، فقط برای جدول استفاده کن
+                    if st["mode"] != "text":
+                        osd = engine.osd_degrees(raw)
+                except Exception:
+                    osd = None
+                
+                try:
+                    if st["mode"] == "text":
+                        # برای دست‌نویس، فقط deskew ساده، بدون OCR اضافی که هنگ می کند
+                        from .preprocess import deskew
+                        gray0 = deskew(raw)
+                        rot_k, _was_table = 0, False
+                    else:
+                        gray0, rot_k, _was_table = upright(
+                            raw,
+                            quick_ocr_conf=lambda g: engine.quick_conf(g, st["lang"]),
+                            osd_result=osd)
                 except Exception:
                     gray0, rot_k, _was_table = raw, 0, False
-                q.put(("status", f"جهت عکس اصلاح شد" if rot_k else "جهت عکس درست است"))
+                q.put(("status", f"جهت عکس اصلاح شد" if rot_k else "آماده پردازش"))
                 
                 # تشخیص نوع صفحه
                 xs, ys = [], []
+                light = None
                 if st["mode"] != "text":
-                    # نسخه سبک (بدون حذف نویز/شارپ) برای تشخیص خطوط جدول
+                    # نسخه سبک برای تشخیص خطوط جدول
                     light, _c, _s = enhance_gray(gray0, st["enhance"], polish=False)
                     if _was_table:
-                        # کراپ دقیق جدول روی تصویر بهبودیافته، سپس تشخیص دوباره خطوط
                         cropped = table_crop(light)
                         if cropped is not light:
                             light = cropped
@@ -730,142 +753,84 @@ class App(_BaseTk):
                 
                 kind = st["mode"]
                 if kind == "auto":
-                    if st["mode"] != "text":
-                        kind = "table" if (is_table_like(light, xs, ys)
-                                           or _was_table) else "text"
+                    if light is not None and (is_table_like(light, xs, ys) or _was_table):
+                        kind = "table"
                     else:
                         kind = "text"
                 
                 if kind == "table":
-                    # اول خطوط جدول را حذف کن، بعد پولیش نهایی OCR
-                    nolines = remove_grid_lines(light, xs, ys)
-                    ocr_img = polish_gray(nolines) if st["enhance"] else nolines
-                    words, conf = engine.recognize(ocr_img, lang=st["lang"],
-                                                   table_mode=True)
-                    if is_table_like(light, xs, ys):
-                        rows = build_table_from_grid(words, xs, ys,
-                                                     light.shape[1], light.shape[0])
-                    else:
-                        rows = build_table_fallback(words)
-                    if not rows:
-                        rows = [[l] for l in build_paragraph_lines(words)]
+                    # جدول: حذف خطوط و OCR سریع
+                    try:
+                        nolines = remove_grid_lines(light, xs, ys)
+                        ocr_img = polish_gray(nolines) if st["enhance"] else nolines
+                        words, conf = engine.recognize(ocr_img, lang=st["lang"], table_mode=True)
+                        if is_table_like(light, xs, ys):
+                            rows = build_table_from_grid(words, xs, ys,
+                                                         light.shape[1], light.shape[0])
+                        else:
+                            rows = build_table_fallback(words)
+                        if not rows:
+                            rows = [[l] for l in build_paragraph_lines(words)]
+                    except Exception as e:
+                        rows = [[f"خطا: {e}"]]
+                        conf = 0
                     results.append({"name": name, "kind": "table", "rows": rows,
                                     "conf": conf, "file": path})
                 else:
-                    # برای دست‌نویس، بهبود مخصوص دست‌نویس
-                    ocr_img, _c2, _s2 = enhance_gray(gray0, st["enhance"],
-                                                    polish=True, handwritten=True)
-                    
-                    # برای دست‌نویس، Tesseract بهتر از PaddleOCR است (PaddleOCR برای چاپی است)
-                    # اگر کاربر PaddleOCR انتخاب کرده ولی حالت متنی است، Tesseract را هم امتحان کن
-                    words, conf = [], 0
-                    lines = []
-                    
+                    # دست‌نویس/متن: سریع و پایدار
                     try:
-                        # همیشه Tesseract را برای دست‌نویس امتحان کن - حتی اگر Paddle انتخاب شده
+                        ocr_img, _c2, _s2 = enhance_gray(gray0, st["enhance"],
+                                                        polish=True, handwritten=True)
+                        
+                        # برای دست‌نویس، همیشه Tesseract بهتر است - حتی اگر Paddle انتخاب شده
+                        # چون Paddle برای چاپی است و هنگ می کند
+                        use_engine = engine
+                        use_lang = st["lang"]
                         if st["engine"] == "paddle":
-                            q.put(("status", "دست‌نویس تشخیص داده شد - موتور سبک (بهتر برای دست‌نویس) امتحان می‌شود..."))
+                            # اگر دست‌نویس است، Tesseract را ترجیح بده
                             try:
-                                tess_engine = TesseractEngine()
-                                # برای دست‌نویس فارسی خالص، فقط فارسی بهتر است
-                                try_lang = "fas" if st["lang"].startswith("fas") else st["lang"]
-                                if hasattr(tess_engine, 'recognize_with_lines'):
-                                    lines_direct = tess_engine.recognize_with_lines(ocr_img, lang=try_lang)
-                                    if lines_direct:
-                                        lines = lines_direct
-                                        words, conf = tess_engine.recognize(ocr_img, lang=try_lang, table_mode=False)
-                                        # اگر Tesseract نتیجه خوبی داد، از آن استفاده کن
-                                        if len("".join(lines)) > 20:
-                                            q.put(("status", "✓ موتور سبک برای دست‌نویس نتیجه بهتری داد"))
-                                        else:
-                                            # نتیجه ضعیف، Paddle را هم امتحان کن
-                                            raise ValueError("Tesseract weak")
-                                else:
-                                    words, conf = tess_engine.recognize(ocr_img, lang=try_lang, table_mode=False)
-                                    lines = build_paragraph_lines(words)
-                            except Exception as tess_e:
-                                # Tesseract موفق نبود، از موتور انتخابی کاربر (Paddle) استفاده کن
-                                q.put(("status", f"Tesseract نتیجه ضعیف، موتور دقیق امتحان می‌شود..."))
-                                words, conf = engine.recognize(ocr_img, lang=st["lang"],
-                                                               table_mode=False)
-                                if hasattr(engine, 'recognize_with_lines'):
-                                    try:
-                                        lines_direct = engine.recognize_with_lines(ocr_img, lang=st["lang"])
-                                        if lines_direct and sum(len(l) for l in lines_direct) > sum(len(w.text) for w in words):
-                                            lines = lines_direct
-                                        else:
-                                            lines = build_paragraph_lines(words)
-                                    except:
-                                        lines = build_paragraph_lines(words)
-                                else:
-                                    lines = build_paragraph_lines(words)
-                        else:
-                            # کاربر Tesseract انتخاب کرده - بهترین حالت برای دست‌نویس
-                            # برای فارسی خالص، فقط فارسی را امتحان کن
-                            try_lang = st["lang"]
-                            if st["lang"] == "fas+eng":
-                                # برای دست‌نویس فارسی، فقط فارسی بهتر جواب می دهد
-                                # اول fas را امتحان کن، اگر خوب نبود fas+eng
-                                try:
-                                    words_fas, conf_fas = engine.recognize(ocr_img, lang="fas", table_mode=False)
-                                    lines_fas = []
-                                    if hasattr(engine, 'recognize_with_lines'):
-                                        lines_fas = engine.recognize_with_lines(ocr_img, lang="fas")
-                                        if not lines_fas:
-                                            lines_fas = build_paragraph_lines(words_fas)
-                                    else:
-                                        lines_fas = build_paragraph_lines(words_fas)
-                                    
-                                    words_both, conf_both = engine.recognize(ocr_img, lang="fas+eng", table_mode=False)
-                                    lines_both = build_paragraph_lines(words_both)
-                                    
-                                    # کدام بهتر است؟ متنی که فارسی بیشتر دارد و طولانی‌تر است
-                                    import re
-                                    persian_fas = len(re.findall(r'[ء-ی]', "".join(lines_fas)))
-                                    persian_both = len(re.findall(r'[ء-ی]', "".join(lines_both)))
-                                    len_fas = sum(len(l) for l in lines_fas)
-                                    len_both = sum(len(l) for l in lines_both)
-                                    
-                                    # اگر fas فارسی بیشتر و طولانی‌تر است، آن را انتخاب کن
-                                    if persian_fas >= persian_both and len_fas >= len_both * 0.8:
-                                        words, conf, lines = words_fas, conf_fas, lines_fas
-                                        q.put(("status", "✓ زبان 'فقط فارسی' برای دست‌نویس نتیجه بهتری داد"))
-                                    else:
-                                        words, conf, lines = words_both, conf_both, lines_both
-                                except Exception:
-                                    words, conf = engine.recognize(ocr_img, lang=st["lang"], table_mode=False)
-                                    if hasattr(engine, 'recognize_with_lines'):
-                                        lines_direct = engine.recognize_with_lines(ocr_img, lang=st["lang"])
-                                        if lines_direct and sum(len(l) for l in lines_direct) > sum(len(w.text) for w in words) * 0.8:
-                                            lines = lines_direct
-                                        else:
-                                            lines = build_paragraph_lines(words)
-                                    else:
-                                        lines = build_paragraph_lines(words)
-                            else:
-                                words, conf = engine.recognize(ocr_img, lang=st["lang"], table_mode=False)
-                                if hasattr(engine, 'recognize_with_lines'):
-                                    try:
-                                        lines_direct = engine.recognize_with_lines(ocr_img, lang=st["lang"])
-                                        if lines_direct and sum(len(l) for l in lines_direct) > sum(len(w.text) for w in words) * 0.7:
-                                            lines = lines_direct
-                                        else:
-                                            lines = build_paragraph_lines(words)
-                                    except:
-                                        lines = build_paragraph_lines(words)
-                                else:
-                                    lines = build_paragraph_lines(words)
-                    except Exception as e:
-                        # fallback نهایی
+                                tess = TesseractEngine()
+                                use_engine = tess
+                                # برای فارسی خالص، فقط فارسی
+                                if st["lang"].startswith("fas"):
+                                    use_lang = "fas"
+                                q.put(("status", "دست‌نویس - موتور سبک (سریع‌تر) استفاده می‌شود"))
+                            except Exception:
+                                use_engine = engine
+                        
+                        # خطوط مستقیم - سریع و معنی را حفظ می کند
+                        lines = []
                         try:
-                            words, conf = engine.recognize(ocr_img, lang=st["lang"], table_mode=False)
-                            lines = build_paragraph_lines(words)
-                        except Exception as e2:
+                            if hasattr(use_engine, 'recognize_with_lines'):
+                                lines = use_engine.recognize_with_lines(ocr_img, lang=use_lang)
+                        except Exception:
+                            lines = []
+                        
+                        # کلمات برای اطمینان
+                        try:
+                            words, conf = use_engine.recognize(ocr_img, lang=use_lang, table_mode=False)
+                            if not lines:
+                                lines = build_paragraph_lines(words)
+                            # اگر خطوط مستقیم بهتر است، از آن استفاده کن
+                            elif words:
+                                direct_len = sum(len(l) for l in lines)
+                                words_len = sum(len(w.text) for w in words)
+                                if words_len > direct_len * 1.2:
+                                    # کلمات بیشتر، از clustering استفاده کن
+                                    lines_from_words = build_paragraph_lines(words)
+                                    if sum(len(l) for l in lines_from_words) > direct_len:
+                                        lines = lines_from_words
+                        except Exception as e:
                             words, conf = [], 0
-                            lines = [f"(خطا: {e2}) - لطفاً عکس واضح‌تر و زبان 'فقط فارسی' را امتحان کنید"]
+                            if not lines:
+                                lines = [f"خطا: {e}"]
+                        
+                    except Exception as e:
+                        words, conf = [], 0
+                        lines = [f"خطا در پردازش دست‌نویس: {e}"]
                     
                     if not lines:
-                        lines = ["(متنی تشخیص داده نشد) - پیشنهادات:\n1. زبان را روی 'فقط فارسی' بگذارید\n2. عکس را با نور بهتر و بدون سایه بگیرید\n3. حالت 'متن / دست‌نویس' را انتخاب کنید\n4. موتور 'سبک (Tesseract)' برای دست‌نویس بهتر است"]
+                        lines = ["(متنی تشخیص داده نشد) - پیشنهادات: زبان=فقط فارسی، موتور=سبک، عکس واضح‌تر"]
                     results.append({"name": name, "kind": "text", "lines": lines,
                                     "conf": conf, "file": path})
             except Exception as e:
