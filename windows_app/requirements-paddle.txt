@@ -1,0 +1,13 @@
+# موتور دقیق OCR (اختیاری - حدود ۱ گیگابایت)
+# نصب از طریق Install-PaddleOCR.bat (همه پکیج‌ها فقط به صورت wheel آماده،
+# تا هیچ پکیجی مثل stringzilla روی دستگاه شما کامپایل نشود).
+# الزامات: ویندوز ۶۴ بیتی و پایتون 3.10 تا 3.12.
+# نکته: paddlepaddle نسخه ۳ با paddleocr 2.8.1 ناسازگار است، پس <3.0
+# نکته: opencv 4.14 و 5.x به numpy>=2 نیاز دارند ولی paddleocr numpy<2 می‌خواهد،
+# پس opencv 4.11.0.86 که با numpy 1.26.4 سازگار است استفاده می‌کنیم.
+# نکته: paddleocr در metadata خود opencv-contrib-python می‌خواهد، پس contrib نصب می‌کنیم
+# تا pip warning ندهد (همه opencv ها cv2 را فراهم می‌کنند).
+paddlepaddle>=2.6.0,<3.0
+paddleocr==2.8.1
+opencv-contrib-python==4.11.0.86
+numpy==1.26.4

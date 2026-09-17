@@ -1,0 +1,7 @@
+# فایل‌های دسته‌ای ویندوز حتماً با خط‌پایان CRLF ذخیره شوند
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# کد پایتون با LF
+*.py    text eol=lf
