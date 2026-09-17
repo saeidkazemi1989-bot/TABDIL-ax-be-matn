@@ -149,6 +149,8 @@ class App(_BaseTk):
         title_frame.grid(row=0, column=0, rowspan=2, padx=16, sticky="e")
         ctk.CTkLabel(title_frame, text="کیفیت سازه پویش", font=ctk.CTkFont(FONT, 16, "bold"),
                      text_color="#14532d").pack(anchor="e")
+        ctk.CTkLabel(title_frame, text="سعید کاظمی پور - 09216895359", font=ctk.CTkFont(FONT, 12, "bold"),
+                     text_color="#1e3a8a").pack(anchor="e")
         ctk.CTkLabel(title_frame, text="سیستم هوشمند تبدیل تصاویر به متن",
                      font=ctk.CTkFont(FONT, 11), text_color="#64748b").pack(anchor="e")
         
@@ -156,7 +158,7 @@ class App(_BaseTk):
         self.license_status_lbl = ctk.CTkLabel(title_frame, text="در حال بررسی لایسنس...",
                                                font=ctk.CTkFont(FONT, 10, "bold"),
                                                text_color="#059669")
-        self.license_status_lbl.pack(anchor="e", pady=(4,0))
+        self.license_status_lbl.pack(anchor="e", pady=(2,0))
 
     def _section(self, parent, title):
         f = ctk.CTkFrame(parent, fg_color="#ffffff", border_width=1,
@@ -275,8 +277,17 @@ class App(_BaseTk):
                      font=ctk.CTkFont(FONT, 10), text_color="#64748b",
                      wraplength=270, justify="right").pack(padx=12, pady=(8, 12))
 
+        # --- اطلاعات تماس
+        s5_info = self._section(side, "۵) اطلاعات")
+        ctk.CTkLabel(s5_info, text="نام: سعید کاظمی پور", font=ctk.CTkFont(FONT, 11, "bold"),
+                     text_color="#0f172a", anchor="e").pack(anchor="e", padx=12, pady=(2,0))
+        ctk.CTkLabel(s5_info, text="موبایل: 09216895359", font=ctk.CTkFont(FONT, 11, "bold"),
+                     text_color="#1e3a8a", anchor="e").pack(anchor="e", padx=12, pady=(0,2))
+        ctk.CTkLabel(s5_info, text="کیفیت سازه پویش", font=ctk.CTkFont(FONT, 10),
+                     text_color="#14532d", anchor="e").pack(anchor="e", padx=12, pady=(0,8))
+
         # --- لایسنس
-        s5 = self._section(side, "۵) لایسنس")
+        s5 = self._section(side, "۶) لایسنس")
         self.license_detail_lbl = ctk.CTkLabel(s5, text="در حال بارگذاری...",
                                                font=ctk.CTkFont(FONT, 10),
                                                text_color="#475569",
@@ -314,6 +325,15 @@ class App(_BaseTk):
                                        font=ctk.CTkFont(FONT, 12),
                                        text_color="#475569", anchor="e")
         self.status_lbl.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
+        
+        # فوتر با نام و شماره
+        footer = ctk.CTkFrame(main, fg_color="#ffffff", corner_radius=0, height=28,
+                              border_width=1, border_color="#e2e8f0")
+        footer.grid(row=4, column=0, sticky="ew", padx=0, pady=(8,0))
+        ctk.CTkLabel(footer, text="سعید کاظمی پور | 09216895359 | کیفیت سازه پویش",
+                     font=ctk.CTkFont(FONT, 10), text_color="#64748b").pack(side="right", padx=16, pady=4)
+        ctk.CTkLabel(footer, text=f"TABDIL v{__version__} - لایسنس 1 ماهه",
+                     font=ctk.CTkFont(FONT, 9), text_color="#94a3b8").pack(side="left", padx=16, pady=4)
 
         # نوار ابزار نتیجه
         tools = ctk.CTkFrame(main, fg_color="transparent")
@@ -492,6 +512,10 @@ class App(_BaseTk):
         valid, days_left, msg, payload = license_module.check_license()
         if payload:
             details = (
+                f"نام: سعید کاظمی پور\n"
+                f"موبایل: 09216895359\n"
+                f"شرکت: کیفیت سازه پویش\n"
+                f"----------------------------\n"
                 f"وضعیت: {'معتبر' if valid else 'منقضی'}\n"
                 f"نوع: {payload.get('type','نامشخص')}\n"
                 f"تاریخ ساخت: {payload.get('created','?')}\n"
@@ -503,7 +527,7 @@ class App(_BaseTk):
                 "و با دکمه 'بارگذاری لایسنس جدید' آن را انتخاب کنید."
             )
         else:
-            details = f"لایسنس یافت نشد\n\n{msg}\n\nبرای دریافت لایسنس با پشتیبانی تماس بگیرید."
+            details = f"نام: سعید کاظمی پور\nموبایل: 09216895359\n\nلایسنس یافت نشد\n\n{msg}\n\nبرای دریافت لایسنس با پشتیبانی تماس بگیرید."
         
         messagebox.showinfo("جزئیات لایسنس", details)
         # آپدیت نمایش
