@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""لایه انتزاعی موتورهای OCR - نسخه پایدار و سریع
+"""لایه انتزاعی موتورهای OCR - نسخه متعادل: قوی برای تشخیص ولی سریع
   - TesseractEngine : سبک و آفلاین
   - PaddleEngine   : دقیق‌تر
-  فیکس هنگ: کاهش تعداد تست PSM، بهینه‌سازی سرعت
+  فیکس: تعادل بین سرعت و دقت - 4-6 تست به جای 16+ ولی کافی برای تشخیص
 """
 import os
 import glob
@@ -108,77 +108,125 @@ class TesseractEngine:
         return text
 
     def recognize(self, gray_img, lang="fas+eng", table_mode=True):
-        # برای سرعت، فقط 1-2 کانفیگ تست می شود نه 16 تا
+        # جدول: 5 کانفیگ برتر، متن: 5 کانفیگ برتر - تعادل سرعت و دقت
         if table_mode:
-            # جدول: PSM 6 سریع و دقیق
-            try:
-                data = self._recognize_psm(gray_img, lang, 6, oem=3)
-                words = words_from_tesseract_data(data)
-                if words:
-                    conf = float(np.mean([w.conf for w in words])) if words else 0.0
-                    return words, conf
-            except Exception as e:
-                print(f"Table PSM6 failed: {e}")
+            # برای جدول، PSM 6 بهترین است، ولی fallback های قوی هم لازم است
+            configs = [
+                (lang, 6, 3, ""),  # اصلی
+                ("fas", 6, 3, ""),  # فقط فارسی
+                (lang, 6, 1, "-c preserve_interword_spaces=1"),
+                (lang, 4, 1, ""),
+                (lang, 3, 3, ""),
+                ("fas+eng", 11, 3, ""),  # برای جدول‌های شلوغ
+            ]
+            # اگر lang قبلاً fas+eng است، fas را هم امتحان کن
+            if lang == "fas+eng":
+                # قبلاً در لیست هست
+                pass
+            elif lang == "fas":
+                configs.insert(1, ("fas+eng", 6, 3, ""))
             
-            # fallback PSM 3
+            best_words = []
+            best_conf = 0
+            for try_lang, psm, oem, extra in configs:
+                try:
+                    data = self._recognize_psm(gray_img, try_lang, psm, oem, extra)
+                    words = words_from_tesseract_data(data)
+                    if not words:
+                        continue
+                    conf = float(np.mean([w.conf for w in words])) if words else 0
+                    # امتیاز: تعداد کلمات + اطمینان
+                    score = len(words) * 2 + conf
+                    if score > best_conf:
+                        best_conf = score
+                        best_words = words
+                        # اگر نتیجه خیلی خوب است، ادامه نده
+                        if len(words) > 20 and conf > 50:
+                            break
+                except Exception:
+                    continue
+            
+            if best_words:
+                conf = float(np.mean([w.conf for w in best_words])) if best_words else 0.0
+                return best_words, conf
+            
+            # آخرین تلاش: image_to_string و ساخت کلمات از آن
             try:
-                data = self._recognize_psm(gray_img, lang, 3, oem=3)
-                words = words_from_tesseract_data(data)
-                conf = float(np.mean([w.conf for w in words])) if words else 0.0
-                return words, conf
+                text = self._recognize_string(gray_img, lang, 6, 3, "")
+                if text and len(text.strip()) > 10:
+                    words = []
+                    y = 0
+                    for line in text.split('\n'):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        x = 1000
+                        for wt in line.split():
+                            if len(wt) < 1:
+                                continue
+                            words.append(Word(x=x, y=y, w=len(wt)*15, h=18, text=wt, conf=40,
+                                              block_num=0, par_num=0, line_num=y//30, word_num=x))
+                            x -= 100
+                        y += 30
+                    if words:
+                        return words, 40.0
             except Exception:
-                return [], 0.0
+                pass
+            
+            return [], 0.0
         else:
-            # دست‌نویس/متن: از image_to_string برای حفظ معنی استفاده کن
-            # فقط 2 کانفیگ برتر برای سرعت
+            # دست‌نویس/متن: از image_to_string برای حفظ معنی
             best_words = []
             best_text = ""
-            best_conf = 0
+            best_score = -1
             
-            # کانفیگ‌های بهینه برای دست‌نویس فارسی
+            # کانفیگ‌های بهینه برای دست‌نویس فارسی - 5 تا برتر
             configs = [
                 (6, 1, "-c preserve_interword_spaces=1"),  # بهترین برای پاراگراف فارسی
                 (6, 3, "-c preserve_interword_spaces=1"),
+                (4, 1, "-c preserve_interword_spaces=1"),
                 (3, 1, ""),
+                (11, 1, ""),
             ]
             
-            # برای فارسی، فقط fas را امتحان کن اگر fas+eng بود
             langs = [lang]
             if lang == "fas+eng":
-                langs = ["fas", "fas+eng"]  # اول فقط فارسی
+                langs = ["fas", "fas+eng"]  # اول فقط فارسی برای دست‌نویس
+            elif lang == "fas":
+                langs = ["fas", "fas+eng"]
             
             for try_lang in langs:
                 for psm, oem, extra in configs:
                     try:
-                        # متن مستقیم - سریع و معنی را حفظ می کند
                         text = self._recognize_string(gray_img, try_lang, psm, oem, extra)
-                        if not text or len(text.strip()) < 5:
+                        if not text or len(text.strip()) < 3:
                             continue
                         
-                        # کلمات برای اطمینان
                         data = self._recognize_psm(gray_img, try_lang, psm, oem, extra)
                         words = words_from_tesseract_data(data)
                         
-                        # امتیاز ساده
                         total_chars = len(text.strip())
                         persian_chars = len(re.findall(r'[ء-ی]', text))
-                        avg_conf = float(np.mean([w.conf for w in words])) if words else 0
+                        avg_conf = float(np.mean([w.conf for w in words])) if words else 20
                         
-                        score = total_chars + persian_chars + avg_conf
+                        # امتیاز
+                        score = total_chars + persian_chars * 1.5 + avg_conf + len(words)
                         if persian_chars > total_chars * 0.2:
-                            score += 20  # فارسی بیشتر امتیاز بیشتر
+                            score += 30
+                        if total_chars > 30:
+                            score += 20
                         
-                        if score > best_conf:
-                            best_conf = score
+                        if score > best_score:
+                            best_score = score
                             best_words = words
                             best_text = text
                             
-                            # اگر نتیجه خوبی گرفتیم، ادامه نده برای سرعت
-                            if total_chars > 50 and persian_chars > 10 and avg_conf > 30:
+                            # اگر نتیجه خیلی خوب، ادامه نده
+                            if total_chars > 80 and persian_chars > 15 and avg_conf > 35:
                                 break
                     except Exception:
                         continue
-                if best_conf > 50:
+                if best_score > 100:
                     break
             
             # اگر متنی داریم ولی کلمه نداریم، از متن کلمات بساز
@@ -191,6 +239,8 @@ class TesseractEngine:
                         continue
                     x = 1000
                     for wt in line.split():
+                        if not wt:
+                            continue
                         words.append(Word(x=x, y=y, w=len(wt)*15, h=18, text=wt, conf=40,
                                           block_num=0, par_num=0, line_num=y//30, word_num=x))
                         x -= 100
@@ -199,30 +249,77 @@ class TesseractEngine:
                 return words, conf
             
             conf = float(np.mean([w.conf for w in best_words])) if best_words else 0.0
+            # اگر هنوز خالی است ولی best_text داریم، از آن استفاده کن
+            if not best_words and best_text:
+                words = []
+                y = 0
+                for line in best_text.split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    x = 1000
+                    for wt in line.split():
+                        words.append(Word(x=x, y=y, w=len(wt)*12, h=16, text=wt, conf=35,
+                                          block_num=0, par_num=0, line_num=y//25, word_num=x))
+                        x -= 80
+                    y += 25
+                return words, 35.0
+            
             return best_words, conf
 
     def recognize_with_lines(self, gray_img, lang="fas+eng"):
-        """مستقیم خطوط را بگیر - سریع"""
-        try:
-            # بهترین کانفیگ برای دست‌نویس
-            text = self._recognize_string(gray_img, lang, 6, 1, "-c preserve_interword_spaces=1")
-            if not text or len(text.strip()) < 5:
-                text = self._recognize_string(gray_img, lang, 6, 3, "-c preserve_interword_spaces=1")
-            if not text or len(text.strip()) < 5:
-                text = self._recognize_string(gray_img, lang, 3, 1, "")
-            
-            lines = [l.strip() for l in text.split('\n') if l.strip()]
-            # فیلتر نویز
-            filtered = []
-            for l in lines:
-                if re.match(r'^[|_\-—–¦\s]+$', l):
+        """مستقیم خطوط را بگیر - 4 کانفیگ برتر"""
+        best_lines = []
+        best_score = -1
+        
+        configs = [
+            (6, 1, "-c preserve_interword_spaces=1"),
+            (6, 3, "-c preserve_interword_spaces=1"),
+            (4, 1, ""),
+            (3, 1, ""),
+            (11, 1, ""),
+        ]
+        
+        langs = [lang]
+        if lang == "fas+eng":
+            langs = ["fas", "fas+eng"]
+        
+        for try_lang in langs:
+            for psm, oem, extra in configs:
+                try:
+                    text = self._recognize_string(gray_img, try_lang, psm, oem, extra)
+                    if not text or len(text.strip()) < 3:
+                        continue
+                    lines = [l.strip() for l in text.split('\n') if l.strip()]
+                    if not lines:
+                        continue
+                    
+                    # فیلتر نویز
+                    filtered = []
+                    for l in lines:
+                        if re.match(r'^[|_\-—–¦\s]+$', l):
+                            continue
+                        if len(l) < 2:
+                            continue
+                        filtered.append(l)
+                    if not filtered:
+                        continue
+                    
+                    total_chars = sum(len(l) for l in filtered)
+                    persian_chars = len(re.findall(r'[ء-ی]', "".join(filtered)))
+                    score = total_chars + persian_chars + len(filtered)*5
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_lines = filtered
+                        if total_chars > 100 and persian_chars > 20:
+                            break
+                except Exception:
                     continue
-                if len(l) < 2:
-                    continue
-                filtered.append(l)
-            return filtered
-        except Exception:
-            return []
+            if best_score > 80:
+                break
+        
+        return best_lines
 
     def quick_conf(self, gray_img, lang="fas+eng"):
         import cv2
@@ -271,7 +368,6 @@ class TesseractEngine:
             return None, None
 
 
-# Paddle بخش بدون تغییر زیاد - فقط سریع‌تر
 def _paddle_model_root():
     home = os.path.expanduser("~")
     return [
@@ -418,14 +514,11 @@ class PaddleEngine:
         local_models = _find_local_paddle_models()
         has_cache = _paddle_models_exist()
         
-        # اگر هیچ مدلی نداریم، سریع خطا بده بدون تلاش برای دانلود (که هنگ می کند)
         if not local_models and not has_cache:
             raise RuntimeError(
                 "مدل‌های PaddleOCR هنوز دانلود نشده‌اند.\n\n"
-                "این مدل‌ها از Baidu دانلود می‌شوند که در ایران فیلتر است و باعث هنگ می‌شود.\n\n"
-                "راه‌حل فوری: از موتور سبک (Tesseract) استفاده کنید - آفلاین و سریع است\n"
-                "یا Download-PaddleModels-GitHub.bat را اجرا کنید (از گیت‌هاب، بدون VPN)\n"
-                "اگر 3 فایل tar دستی دارید، در paddle_models بریزید و Setup-PaddleModels-Local.bat"
+                "راه‌حل فوری: از موتور سبک (Tesseract) استفاده کنید - آفلاین و سریع\n"
+                "یا Download-PaddleModels-GitHub.bat را اجرا کنید (از گیت‌هاب)\n"
             )
 
         kwargs = dict(lang=lang, show_log=False, use_angle_cls=True)
@@ -454,7 +547,7 @@ class PaddleEngine:
             if any(k in err for k in ["download", "urlopen", "timeout", "connection", "ssl", "bcebos"]):
                 raise RuntimeError(
                     "دانلود مدل PaddleOCR هنگ کرده (نیاز به VPN).\n"
-                    "از موتور سبک (Tesseract) استفاده کنید یا Download-PaddleModels-GitHub.bat\n"
+                    "از موتور سبک استفاده کنید یا Download-PaddleModels-GitHub.bat\n"
                     f"خطا: {e}"
                 ) from e
             raise

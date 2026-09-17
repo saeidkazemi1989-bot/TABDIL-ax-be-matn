@@ -759,78 +759,177 @@ class App(_BaseTk):
                         kind = "text"
                 
                 if kind == "table":
-                    # جدول: حذف خطوط و OCR سریع
+                    # جدول: حذف خطوط و OCR با fallback های قوی
                     try:
                         nolines = remove_grid_lines(light, xs, ys)
                         ocr_img = polish_gray(nolines) if st["enhance"] else nolines
                         words, conf = engine.recognize(ocr_img, lang=st["lang"], table_mode=True)
-                        if is_table_like(light, xs, ys):
+                        
+                        # اگر کلمه‌ای پیدا نشد، روی تصویر بدون حذف خطوط هم امتحان کن
+                        if not words:
+                            q.put(("status", f"تلاش مجدد بدون حذف خطوط جدول..."))
+                            try:
+                                words2, conf2 = engine.recognize(light, lang=st["lang"], table_mode=True)
+                                if words2 and len(words2) > len(words):
+                                    words, conf = words2, conf2
+                            except Exception:
+                                pass
+                        
+                        # اگر باز هم خالی، روی تصویر اصلی gray0 امتحان کن
+                        if not words:
+                            try:
+                                words3, conf3 = engine.recognize(gray0, lang=st["lang"], table_mode=True)
+                                if words3 and len(words3) > len(words):
+                                    words, conf = words3, conf3
+                            except Exception:
+                                pass
+                        
+                        # ساخت جدول
+                        if is_table_like(light, xs, ys) and words:
                             rows = build_table_from_grid(words, xs, ys,
                                                          light.shape[1], light.shape[0])
                         else:
-                            rows = build_table_fallback(words)
-                        if not rows:
+                            rows = build_table_fallback(words) if words else []
+                        
+                        if not rows and words:
                             rows = [[l] for l in build_paragraph_lines(words)]
+                        
+                        # آخرین fallback: اگر هنوز خالی، از recognize_with_lines استفاده کن
+                        if not rows:
+                            try:
+                                if hasattr(engine, 'recognize_with_lines'):
+                                    lines = engine.recognize_with_lines(ocr_img, lang=st["lang"])
+                                    if not lines:
+                                        lines = engine.recognize_with_lines(light, lang=st["lang"])
+                                    if lines:
+                                        rows = [[l] for l in lines]
+                            except Exception:
+                                pass
+                        
+                        # اگر باز هم خالی، پیام راهنما
+                        if not rows:
+                            rows = [["(متنی تشخیص داده نشد)"]]
+                            # سعی کن حداقل یک متن از image_to_string بگیری
+                            try:
+                                if hasattr(engine, '_recognize_string'):
+                                    txt = engine._recognize_string(ocr_img, st["lang"], 6, 3, "")
+                                    if txt and len(txt.strip()) > 5:
+                                        rows = [[line] for line in txt.split('\n') if line.strip()]
+                            except Exception:
+                                pass
+                            if not rows or rows == [["(متنی تشخیص داده نشد)"]]:
+                                rows = [
+                                    ["راهنما: متنی تشخیص داده نشد"],
+                                    ["۱. زبان را 'فقط فارسی' بگذارید"],
+                                    ["۲. عکس واضح‌تر با نور بهتر بگیرید"],
+                                    ["۳. موتور 'سبک (Tesseract)' را انتخاب کنید"],
+                                    ["۴. تیک 'بهبود کیفیت' را فعال کنید"]
+                                ]
+                                conf = 0
                     except Exception as e:
+                        import traceback
+                        print(f"Table error: {e}\n{traceback.format_exc()}")
                         rows = [[f"خطا: {e}"]]
                         conf = 0
                     results.append({"name": name, "kind": "table", "rows": rows,
                                     "conf": conf, "file": path})
                 else:
-                    # دست‌نویس/متن: سریع و پایدار
+                    # دست‌نویس/متن: با fallback قوی
                     try:
                         ocr_img, _c2, _s2 = enhance_gray(gray0, st["enhance"],
                                                         polish=True, handwritten=True)
                         
-                        # برای دست‌نویس، همیشه Tesseract بهتر است - حتی اگر Paddle انتخاب شده
-                        # چون Paddle برای چاپی است و هنگ می کند
                         use_engine = engine
                         use_lang = st["lang"]
                         if st["engine"] == "paddle":
-                            # اگر دست‌نویس است، Tesseract را ترجیح بده
                             try:
                                 tess = TesseractEngine()
                                 use_engine = tess
-                                # برای فارسی خالص، فقط فارسی
                                 if st["lang"].startswith("fas"):
                                     use_lang = "fas"
                                 q.put(("status", "دست‌نویس - موتور سبک (سریع‌تر) استفاده می‌شود"))
                             except Exception:
                                 use_engine = engine
                         
-                        # خطوط مستقیم - سریع و معنی را حفظ می کند
                         lines = []
+                        words, conf = [], 0
+                        
+                        # تلاش ۱: خطوط مستقیم
                         try:
                             if hasattr(use_engine, 'recognize_with_lines'):
                                 lines = use_engine.recognize_with_lines(ocr_img, lang=use_lang)
                         except Exception:
                             lines = []
                         
-                        # کلمات برای اطمینان
+                        # تلاش ۲: کلمات
                         try:
                             words, conf = use_engine.recognize(ocr_img, lang=use_lang, table_mode=False)
-                            if not lines:
+                            if not lines and words:
                                 lines = build_paragraph_lines(words)
-                            # اگر خطوط مستقیم بهتر است، از آن استفاده کن
-                            elif words:
-                                direct_len = sum(len(l) for l in lines)
+                            elif words and lines:
+                                # کدام بهتر؟
+                                direct_len = sum(len(l) for l in lines) if lines else 0
                                 words_len = sum(len(w.text) for w in words)
                                 if words_len > direct_len * 1.2:
-                                    # کلمات بیشتر، از clustering استفاده کن
                                     lines_from_words = build_paragraph_lines(words)
                                     if sum(len(l) for l in lines_from_words) > direct_len:
                                         lines = lines_from_words
                         except Exception as e:
-                            words, conf = [], 0
                             if not lines:
-                                lines = [f"خطا: {e}"]
+                                lines = []
+                        
+                        # تلاش ۳: اگر خالی، روی gray0 بدون enhance امتحان کن
+                        if not lines:
+                            q.put(("status", "تلاش مجدد بدون بهبود کیفیت..."))
+                            try:
+                                if hasattr(use_engine, 'recognize_with_lines'):
+                                    lines2 = use_engine.recognize_with_lines(gray0, lang=use_lang)
+                                    if lines2 and sum(len(l) for l in lines2) > 5:
+                                        lines = lines2
+                                if not lines:
+                                    words2, conf2 = use_engine.recognize(gray0, lang=use_lang, table_mode=False)
+                                    if words2:
+                                        lines = build_paragraph_lines(words2)
+                                        words, conf = words2, conf2
+                            except Exception:
+                                pass
+                        
+                        # تلاش ۴: زبان دیگر
+                        if not lines and use_lang != "fas":
+                            try:
+                                if hasattr(use_engine, 'recognize_with_lines'):
+                                    lines_fas = use_engine.recognize_with_lines(ocr_img, lang="fas")
+                                    if lines_fas:
+                                        lines = lines_fas
+                            except Exception:
+                                pass
+                        
+                        # تلاش ۵: image_to_string مستقیم
+                        if not lines:
+                            try:
+                                if hasattr(use_engine, '_recognize_string'):
+                                    txt = use_engine._recognize_string(ocr_img, use_lang, 6, 1, "-c preserve_interword_spaces=1")
+                                    if txt and len(txt.strip()) > 3:
+                                        lines = [l.strip() for l in txt.split('\n') if l.strip()]
+                            except Exception:
+                                pass
                         
                     except Exception as e:
+                        import traceback
+                        print(f"Text error: {e}\n{traceback.format_exc()}")
                         words, conf = [], 0
                         lines = [f"خطا در پردازش دست‌نویس: {e}"]
                     
                     if not lines:
-                        lines = ["(متنی تشخیص داده نشد) - پیشنهادات: زبان=فقط فارسی، موتور=سبک، عکس واضح‌تر"]
+                        lines = [
+                            "(متنی تشخیص داده نشد)",
+                            "پیشنهادات:",
+                            "۱. زبان را 'فقط فارسی' بگذارید",
+                            "۲. عکس واضح‌تر با نور بهتر",
+                            "۳. حالت 'متن / دست‌نویس' انتخاب شود",
+                            "۴. موتور 'سبک (Tesseract)' بهتر است برای دست‌نویس",
+                            "۵. تیک 'بهبود کیفیت' فعال باشد"
+                        ]
                     results.append({"name": name, "kind": "text", "lines": lines,
                                     "conf": conf, "file": path})
             except Exception as e:

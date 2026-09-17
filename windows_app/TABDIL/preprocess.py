@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""پیش‌پردازش عکس - نسخه سریع و پایدار"""
+"""پیش‌پردازش عکس - نسخه متعادل: قوی برای تشخیص ولی سریع بدون هنگ"""
 import cv2
 import numpy as np
 
@@ -29,15 +29,13 @@ def rotate_image(image: np.ndarray, angle: float, border=(255, 255, 255)) -> np.
 
 
 def estimate_skew(gray: np.ndarray) -> float:
-    # برای سرعت، روی تصویر کوچک تخمین بزن
+    # برای سرعت روی تصویر کوچک 1000px
     h, w = gray.shape
-    # اگر تصویر خیلی بزرگ است، کوچک کن برای سرعت
-    if max(h, w) > 1500:
+    if max(h, w) > 1200:
         scale = 1000.0 / max(h, w)
         small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     else:
         small = gray
-        scale = 1.0
     
     h_s, w_s = small.shape
     inv = cv2.threshold(small, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
@@ -47,12 +45,29 @@ def estimate_skew(gray: np.ndarray) -> float:
         cv2.getStructuringElement(cv2.MORPH_RECT, (klen, 1)),
     )
     pts = cv2.findNonZero(hor)
-    if pts is not None and len(pts) > 100:
+    if pts is not None and len(pts) > 80:
         line = cv2.fitLine(pts, cv2.DIST_L1, 0.0, 0.01, 0.01)
         vx, vy = float(line[0]), float(line[1])
         angle = np.degrees(np.arctan2(vy, vx))
-        if abs(angle) <= 8:
+        if abs(angle) <= 10 and abs(angle) > 0.2:
             return angle
+    
+    # fallback Hough سریع روی تصویر کوچک
+    try:
+        edges = cv2.Canny(small, 50, 150, apertureSize=3)
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180.0, threshold=120,
+                                minLineLength=int(w_s * 0.25), maxLineGap=20)
+        angles = []
+        if lines is not None:
+            for ln in lines:
+                x1, y1, x2, y2 = ln[0]
+                a = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+                if abs(a) < 12 and abs(a) > 0.3:
+                    angles.append(a)
+        if angles:
+            return float(np.median(angles))
+    except Exception:
+        pass
     return 0.0
 
 
@@ -76,8 +91,8 @@ def load_gray(path_or_img):
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 
-def _limit_size(gray, max_w=2200, max_h=3000):
-    """اگر عکس خیلی بزرگ است، کوچک کن تا هنگ نکند"""
+def _limit_size(gray, max_w=2400, max_h=3200):
+    """محدودیت سایز برای جلوگیری از هنگ - ولی نه خیلی کوچک"""
     h, w = gray.shape[:2]
     if w > max_w or h > max_h:
         scale = min(max_w / float(w), max_h / float(h))
@@ -88,10 +103,10 @@ def _limit_size(gray, max_w=2200, max_h=3000):
             return gray, scale
     return gray, 1.0
 
+
 def enhance_handwritten(gray):
-    """بهبود سریع برای دست‌نویس - بدون هنگ"""
-    # اول سایز را محدود کن
-    gray, _ = _limit_size(gray, max_w=2000, max_h=2800)
+    """بهبود متعادل برای دست‌نویس - قوی ولی سریع"""
+    gray, _ = _limit_size(gray, max_w=2200, max_h=3000)
     
     try:
         gray = deskew(gray)
@@ -99,34 +114,40 @@ def enhance_handwritten(gray):
         pass
     
     h, w = gray.shape
-    # برای دست‌نویس، بزرگ‌نمایی ملایم - نه خیلی زیاد که هنگ کند
-    target_w = 1800
+    # بزرگ‌نمایی برای دست‌نویس فارسی مهم است - Tesseract متن ریز را نمی‌خواند
+    target_w = 2000
     scale = 1.0
     if w < target_w:
-        scale = min(1.6, target_w / float(w))
-        if scale > 1.1:
+        scale = min(2.0, target_w / float(w))
+        if scale > 1.05:
             gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     
-    # CLAHE ملایم و سریع
+    # CLAHE قوی‌تر برای کنتراست بهتر
     try:
-        clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
         gray = clahe.apply(gray)
     except Exception:
         pass
     
-    # نویز کم - سریع (h کوچکتر = سریعتر)
+    # نویزگیری متوسط
     try:
-        gray = cv2.fastNlMeansDenoising(gray, None, 4, 7, 21)
+        gray = cv2.fastNlMeansDenoising(gray, None, 7, 7, 21)
     except Exception:
         try:
-            gray = cv2.fastNlMeansDenoising(gray, h=4)
+            gray = cv2.fastNlMeansDenoising(gray, h=7)
         except Exception:
             pass
     
-    # شارپ ملایم
+    # شارپ کردن برای خوانایی بهتر
     try:
-        blur = cv2.GaussianBlur(gray, (0, 0), 1.0)
-        gray = cv2.addWeighted(gray, 1.15, blur, -0.15, 0)
+        blur = cv2.GaussianBlur(gray, (0, 0), 1.5)
+        gray = cv2.addWeighted(gray, 1.3, blur, -0.3, 0)
+    except Exception:
+        pass
+    
+    # نرمال‌سازی برای کنتراست نهایی
+    try:
+        gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
     except Exception:
         pass
     
@@ -139,8 +160,7 @@ def enhance_gray(gray, enhance: bool = True, polish: bool = True, handwritten: b
         color = cv2.cvtColor(gray_enhanced, cv2.COLOR_GRAY2BGR)
         return gray_enhanced, color, scale
     
-    # محدودیت سایز برای جدول هم
-    gray, _ = _limit_size(gray, max_w=2200, max_h=3000)
+    gray, _ = _limit_size(gray, max_w=2400, max_h=3200)
     
     scale = 1.0
     if enhance:
@@ -149,27 +169,27 @@ def enhance_gray(gray, enhance: bool = True, polish: bool = True, handwritten: b
         except Exception:
             pass
         h, w = gray.shape
-        target_w = 1800
+        target_w = 2000
         if w < target_w:
-            scale = min(1.5, target_w / float(w))
-            if scale > 1.1:
+            scale = min(1.8, target_w / float(w))
+            if scale > 1.05:
                 gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
         try:
-            clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 8))
+            clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
             gray = clahe.apply(gray)
         except Exception:
             pass
         if polish:
             try:
-                gray = cv2.fastNlMeansDenoising(gray, None, 6, 7, 21)
+                gray = cv2.fastNlMeansDenoising(gray, None, 8, 7, 21)
             except Exception:
                 try:
-                    gray = cv2.fastNlMeansDenoising(gray, h=6)
+                    gray = cv2.fastNlMeansDenoising(gray, h=8)
                 except Exception:
                     pass
             try:
-                blur = cv2.GaussianBlur(gray, (0, 0), 1.5)
-                gray = cv2.addWeighted(gray, 1.2, blur, -0.2, 0)
+                blur = cv2.GaussianBlur(gray, (0, 0), 2)
+                gray = cv2.addWeighted(gray, 1.3, blur, -0.3, 0)
             except Exception:
                 pass
 
@@ -178,10 +198,14 @@ def enhance_gray(gray, enhance: bool = True, polish: bool = True, handwritten: b
 
 
 def polish_gray(gray):
+    """پولیش نهایی قوی برای OCR"""
     try:
-        gray = cv2.fastNlMeansDenoising(gray, h=7)
+        gray = cv2.fastNlMeansDenoising(gray, None, 8, 7, 21)
     except Exception:
-        pass
+        try:
+            gray = cv2.fastNlMeansDenoising(gray, h=8)
+        except Exception:
+            pass
     try:
         blur = cv2.GaussianBlur(gray, (0, 0), 2)
         return cv2.addWeighted(gray, 1.3, blur, -0.3, 0)
