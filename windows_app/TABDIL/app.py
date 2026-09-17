@@ -1138,45 +1138,129 @@ class App(_BaseTk):
         self.entry_grids = {}
         self._tabs = {}
         for idx, sh in enumerate(self.sheets):
-            name = f"{sh['name']} ({'متن' if sh['kind']=='text' else len(sh['rows'])})"
-            tab = self.tabs.add(name)
-            self._tabs[idx] = name
-            if sh["kind"] == "table":
-                self._build_table_editor(tab, idx, sh)
-            else:
-                box = ctk.CTkTextbox(tab, font=ctk.CTkFont(FONT, 13), wrap="word",
-                                     fg_color="#ffffff")
-                box.pack(fill="both", expand=True, padx=8, pady=8)
-                box.insert("1.0", "\n".join(sh["lines"]))
-                self.entry_grids[idx] = ("text", box)
+            try:
+                row_count = len(sh.get('rows', [])) if sh['kind']=='table' else len(sh.get('lines', []))
+                name = f"{sh['name']} ({'متن' if sh['kind']=='text' else row_count} ردیف)"
+                tab = self.tabs.add(name)
+                self._tabs[idx] = name
+                if sh["kind"] == "table":
+                    self._build_table_editor(tab, idx, sh)
+                else:
+                    box = ctk.CTkTextbox(tab, font=ctk.CTkFont(FONT, 13), wrap="word",
+                                         fg_color="#ffffff", text_color="#0f172a")
+                    box.pack(fill="both", expand=True, padx=8, pady=8)
+                    box.insert("1.0", "\n".join(sh["lines"]))
+                    self.entry_grids[idx] = ("text", box)
+            except Exception as e:
+                print(f"Render sheet {idx} failed: {e}")
+                import traceback
+                traceback.print_exc()
+                try:
+                    tab = self.tabs.add(f"{sh['name']} (خطا)")
+                    box = ctk.CTkTextbox(tab, font=ctk.CTkFont(FONT, 12), wrap="word")
+                    box.pack(fill="both", expand=True, padx=8, pady=8)
+                    if sh['kind'] == 'table':
+                        txt = "\n".join(["\t".join(row) for row in sh.get('rows', [])[:50]])
+                        box.insert("1.0", f"خطا در نمایش جدول: {e}\n\n{txt}")
+                    else:
+                        box.insert("1.0", "\n".join(sh.get('lines', [])))
+                except Exception:
+                    pass
         if self._tabs:
-            self.tabs.set(self._tabs[0])
+            try:
+                self.tabs.set(self._tabs[0])
+            except Exception:
+                pass
 
     def _build_table_editor(self, tab, idx, sh):
-        wrap = ctk.CTkScrollableFrame(tab, fg_color="#f8fafc")
-        wrap.pack(fill="both", expand=True)
-        grid = ctk.CTkFrame(wrap, fg_color="transparent")
-        grid.pack(fill="both", expand=True, padx=6, pady=6)
-        entries = []
-        rows = sh["rows"]
-        for r, row in enumerate(rows):
-            er = []
-            for c in range(max(len(row), 1)):
-                val = row[c] if c < len(row) else ""
-                e = ctk.CTkEntry(grid, font=ctk.CTkFont(FONT, 12, bold=(r == 0)),
-                                 height=30 if r == 0 else 26,
-                                 fg_color="#dbeafe" if r == 0 else ("#ffffff" if r % 2 else "#f1f5f9"),
-                                 border_width=1, border_color="#cbd5e1",
-                                 corner_radius=0, justify="right")
-                e.insert(0, str(val))
-                e.grid(row=r, column=c, sticky="ew", padx=1, pady=1)
-                er.append(e)
-            entries.append(er)
-        self.entry_grids[idx] = ("table", grid, entries)
-        info = ctk.CTkLabel(tab, text=f"اطمینان تقریبی تشخیص: {sh.get('conf', 0):.0f}٪  -  "
-                                      "سلول‌ها قابل ویرایش هستند",
-                            font=ctk.CTkFont(FONT, 10), text_color="#64748b")
-        info.pack(side="bottom", pady=4)
+        try:
+            rows = sh.get("rows", [])
+            if not rows:
+                lbl = ctk.CTkLabel(tab, text="جدول خالی است - روی ذخیره بزنید تا در اکسل ببینید", font=ctk.CTkFont(FONT, 14))
+                lbl.pack(pady=20)
+                box = ctk.CTkTextbox(tab, font=ctk.CTkFont(FONT, 11), height=200)
+                box.pack(fill="x", padx=8, pady=8)
+                box.insert("1.0", "ردیف‌ها خالی است. لاگ: " + str(sh.get('conf', 0)))
+                return
+            
+            display_rows = rows[:80]
+            truncated = len(rows) > 80
+            
+            wrap = ctk.CTkScrollableFrame(tab, fg_color="#ffffff")
+            wrap.pack(fill="both", expand=True, padx=4, pady=4)
+            
+            grid = ctk.CTkFrame(wrap, fg_color="transparent")
+            grid.pack(fill="both", expand=True, padx=2, pady=2)
+            
+            max_cols = max((len(r) for r in display_rows), default=1)
+            max_cols = min(max_cols, 12)
+            for c in range(max_cols):
+                grid.grid_columnconfigure(c, weight=1, minsize=80)
+            
+            entries = []
+            for r, row in enumerate(display_rows):
+                er = []
+                for c in range(max_cols):
+                    val = row[c] if c < len(row) else ""
+                    display_val = str(val)[:150] if len(str(val)) > 150 else str(val)
+                    try:
+                        e = ctk.CTkEntry(grid, 
+                                         font=ctk.CTkFont(FONT, 11, bold=(r == 0)),
+                                         height=28 if r == 0 else 24,
+                                         fg_color="#dbeafe" if r == 0 else ("#ffffff" if r % 2 == 0 else "#f8fafc"),
+                                         text_color="#0f172a",
+                                         border_width=1, border_color="#cbd5e1",
+                                         corner_radius=4, justify="right",
+                                         width=100)
+                        e.insert(0, display_val)
+                        e.grid(row=r, column=c, sticky="ew", padx=1, pady=1)
+                        er.append(e)
+                    except Exception as e_entry:
+                        print(f"Entry failed r={r} c={c}: {e_entry}")
+                        try:
+                            lbl = ctk.CTkLabel(grid, text=display_val[:40], font=ctk.CTkFont(FONT, 10), anchor="e")
+                            lbl.grid(row=r, column=c, sticky="ew", padx=1, pady=1)
+                            er.append(lbl)
+                        except Exception:
+                            er.append(None)
+                entries.append(er)
+            
+            self.entry_grids[idx] = ("table", grid, entries, rows)
+            
+            info_text = f"ردیف: {len(rows)} | ستون: {max_cols} | اطمینان: {sh.get('conf', 0):.0f}%"
+            if truncated:
+                info_text += f" (نمایش {len(display_rows)} اول)"
+            
+            info = ctk.CTkLabel(tab, text=info_text,
+                                font=ctk.CTkFont(FONT, 10), text_color="#64748b")
+            info.pack(side="bottom", pady=4)
+            
+            if truncated:
+                def show_all():
+                    win = ctk.CTkToplevel(self)
+                    win.title(f"همه ردیف‌ها - {sh['name']}")
+                    win.geometry("900x600")
+                    txt = ctk.CTkTextbox(win, font=ctk.CTkFont(FONT, 11))
+                    txt.pack(fill="both", expand=True, padx=8, pady=8)
+                    txt.insert("1.0", "\n".join(["\t".join(r) for r in rows]))
+                
+                btn = ctk.CTkButton(tab, text=f"نمایش همه {len(rows)} ردیف در پنجره جدا", height=24,
+                                    font=ctk.CTkFont(FONT, 10),
+                                    command=show_all)
+                btn.pack(side="bottom", pady=2)
+                
+        except Exception as e:
+            import traceback
+            print(f"Table editor failed: {e}\n{traceback.format_exc()}")
+            try:
+                box = ctk.CTkTextbox(tab, font=ctk.CTkFont(FONT, 11), wrap="none")
+                box.pack(fill="both", expand=True, padx=8, pady=8)
+                rows = sh.get("rows", [])
+                txt = "\n".join(["\t".join(r) for r in rows[:100]])
+                box.insert("1.0", f"خطا در نمایش گرید: {e}\n\n{txt}")
+                self.entry_grids[idx] = ("text", box)
+            except Exception:
+                pass
 
     def _active_sheet_idx(self):
         current = self.tabs.get()
@@ -1192,14 +1276,53 @@ class App(_BaseTk):
             if not ed:
                 continue
             if ed[0] == "text":
-                txt = ed[1].get("1.0", "end").strip("\n")
-                sh["lines"] = [l for l in txt.split("\n")]
+                try:
+                    txt = ed[1].get("1.0", "end").strip("\n")
+                    sh["lines"] = [l for l in txt.split("\n")]
+                except Exception:
+                    pass
             else:
-                entries = ed[2]
-                rows = []
-                for er in entries:
-                    rows.append([e.get() for e in er])
-                sh["rows"] = rows
+                try:
+                    entries = ed[2]
+                    rows = []
+                    for er in entries:
+                        row = []
+                        for e in er:
+                            try:
+                                if e is None:
+                                    row.append("")
+                                elif hasattr(e, 'get'):
+                                    row.append(e.get())
+                                else:
+                                    # Label یا چیز دیگر
+                                    row.append("")
+                            except Exception:
+                                row.append("")
+                        rows.append(row)
+                    # اگر rows اصلی بزرگتر بود (80 اول نمایش داده شده)، بقیه را نگه دار
+                    if len(ed) >= 4 and isinstance(ed[3], list):
+                        full_rows = ed[3]
+                        if len(full_rows) > len(rows):
+                            # بقیه ردیف‌های نمایش داده نشده را هم نگه دار
+                            # اول ردیف‌های ویرایش شده را جایگزین کن
+                            for i in range(min(len(rows), len(full_rows))):
+                                if i < len(full_rows):
+                                    # اگر کاربر ستون اضافه کرده، طول را تنظیم کن
+                                    if len(rows[i]) > len(full_rows[i]):
+                                        full_rows[i] = rows[i]
+                                    else:
+                                        # فقط مقادیر ویرایش شده را جایگزین کن
+                                        for j in range(min(len(rows[i]), len(full_rows[i]))):
+                                            full_rows[i][j] = rows[i][j]
+                                        if len(rows[i]) > len(full_rows[i]):
+                                            full_rows[i] += rows[i][len(full_rows[i]):]
+                            sh["rows"] = full_rows
+                        else:
+                            sh["rows"] = rows
+                    else:
+                        sh["rows"] = rows
+                except Exception as e:
+                    print(f"Sync failed idx={idx}: {e}")
 
     def _rebuild_active_grid(self):
         idx = self._active_sheet_idx()
