@@ -45,7 +45,10 @@ def _write_matrix(ws, rows, header=True, title=None, is_handwritten=False):
     for i, row in enumerate(rows):
         r = r0 + i
         for j, val in enumerate(row):
-            c = ws.cell(row=r, column=j + 1, value=val)
+            # هندل None
+            if val is None:
+                val = ""
+            c = ws.cell(row=r, column=j + 1, value=str(val) if not isinstance(val, (int, float)) else val)
             # برای دست‌نویس فونت کمی بزرگتر
             if is_handwritten:
                 c.font = Font(name=OUTPUT_FONT, size=12, bold=(header and i==0))
@@ -220,10 +223,19 @@ def _shade_cell(cell, hex_color):
 
 
 def _fill_cell(cell, text, bold=False, header=False):
+    # پاک کردن کامل سلول برای جلوگیری از double run
     cell.text = ""
+    # حذف run های اضافی که cell.text ساخته
     p = cell.paragraphs[0]
+    # پاک کردن همه run ها
+    for _ in range(len(p.runs)):
+        try:
+            p.runs[0]._element.getparent().remove(p.runs[0]._element)
+        except:
+            break
     _rtl_paragraph(p)
-    run = p.add_run("" if text is None else str(text))
+    clean_text = "" if text is None else str(text)
+    run = p.add_run(clean_text)
     _set_run_font(run, size=10.5, bold=bold or header,
                   color=(31, 56, 100) if header else None)
     if header:
