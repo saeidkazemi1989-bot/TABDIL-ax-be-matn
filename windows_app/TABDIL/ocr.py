@@ -26,6 +26,39 @@ def _debug_log(msg):
         pass
 
 
+def _get_tessdata_candidates():
+    """لیست مسیرهای tessdata برای تست - هم bundled هم سیستمی"""
+    candidates = []
+    # 1. bundled
+    candidates.append(TESSDATA_DIR)
+    # 2. کنار exe
+    try:
+        from .util import app_base_dir
+        base = app_base_dir()
+        candidates.append(os.path.join(base, "TABDIL", "tessdata"))
+        candidates.append(os.path.join(base, "tessdata"))
+    except Exception:
+        pass
+    # 3. سیستمی Tesseract
+    system_paths = [
+        r"C:\Program Files\Tesseract-OCR\tessdata",
+        r"C:\Program Files (x86)\Tesseract-OCR\tessdata",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Programs\Tesseract-OCR\tessdata"),
+        os.path.join(os.environ.get("PROGRAMDATA", ""), r"Tesseract-OCR\tessdata"),
+    ]
+    for p in system_paths:
+        if p and os.path.exists(p):
+            candidates.append(p)
+    # حذف تکراری
+    seen = set()
+    uniq = []
+    for c in candidates:
+        if c and c not in seen and os.path.exists(c):
+            seen.add(c)
+            uniq.append(c)
+    return uniq
+
+
 class TesseractEngine:
     name = "tesseract"
     display_name = "Tesseract (سبک و آفلاین)"
@@ -99,18 +132,24 @@ class TesseractEngine:
                 "۱) فایل Install-Tesseract.bat را اجرا کنید\n"
                 "۲) یا دستی نصب کنید: https://github.com/UB-Mannheim/tesseract/wiki\n"
             )
-        if not os.path.exists(os.path.join(TESSDATA_DIR, "fas.traineddata")):
-            return False, "فایل زبان فارسی (fas.traineddata) کنار برنامه پیدا نشد."
+        # چک tessdata در چند مسیر
+        tessdata_list = _get_tessdata_candidates()
+        has_fas = any(os.path.exists(os.path.join(td, "fas.traineddata")) for td in tessdata_list)
+        if not has_fas:
+            return False, f"فایل زبان فارسی (fas.traineddata) پیدا نشد.\nمسیرهای چک شده: {tessdata_list}\nفایل Install-Tesseract.bat را اجرا کنید یا fas.traineddata را در tessdata بریزید."
         return True, exe
 
     def _recognize_psm(self, gray_img, lang, psm, oem=3, extra_config=""):
-        # تلاش اول با tessdata-dir
-        configs_to_try = [
-            f'--tessdata-dir "{TESSDATA_DIR}" --oem {oem} --psm {psm} {extra_config}',
-            f'--oem {oem} --psm {psm} {extra_config}',  # بدون tessdata-dir
-            f'--tessdata-dir "{TESSDATA_DIR}" --oem 3 --psm {psm}',  # ساده
-            f'--oem 3 --psm {psm}',
-        ]
+        tessdata_list = _get_tessdata_candidates()
+        # تلاش با هر tessdata
+        configs_to_try = []
+        for td in tessdata_list:
+            configs_to_try.append(f'--tessdata-dir "{td}" --oem {oem} --psm {psm} {extra_config}')
+            configs_to_try.append(f'--tessdata-dir "{td}" --oem 3 --psm {psm}')
+        # بدون tessdata-dir
+        configs_to_try.append(f'--oem {oem} --psm {psm} {extra_config}')
+        configs_to_try.append(f'--oem 3 --psm {psm}')
+        
         last_exc = None
         for cfg in configs_to_try:
             try:
@@ -119,24 +158,24 @@ class TesseractEngine:
                         gray_img, lang=lang, config=cfg,
                         output_type=self._pytesseract.Output.DICT,
                     )
-                # اگر دیتا برگشت، حتی اگر خالی، موفق بوده
                 return data
             except Exception as e:
                 last_exc = e
                 _debug_log(f"PSM {psm} OEM {oem} lang {lang} config failed: {e} | cfg={cfg}")
                 continue
-        # اگر همه شکست خورد، خطا را پرتاب کن
         if last_exc:
             raise last_exc
         return {"text": [], "conf": [], "left": [], "top": [], "width": [], "height": []}
 
     def _recognize_string(self, gray_img, lang, psm, oem=3, extra_config=""):
-        configs_to_try = [
-            f'--tessdata-dir "{TESSDATA_DIR}" --oem {oem} --psm {psm} {extra_config}',
-            f'--oem {oem} --psm {psm} {extra_config}',
-            f'--tessdata-dir "{TESSDATA_DIR}" --oem 3 --psm {psm}',
-            f'--oem 3 --psm {psm}',
-        ]
+        tessdata_list = _get_tessdata_candidates()
+        configs_to_try = []
+        for td in tessdata_list:
+            configs_to_try.append(f'--tessdata-dir "{td}" --oem {oem} --psm {psm} {extra_config}')
+            configs_to_try.append(f'--tessdata-dir "{td}" --oem 3 --psm {psm}')
+        configs_to_try.append(f'--oem {oem} --psm {psm} {extra_config}')
+        configs_to_try.append(f'--oem 3 --psm {psm}')
+        
         last_exc = None
         for cfg in configs_to_try:
             try:
@@ -147,7 +186,7 @@ class TesseractEngine:
                 return text
             except Exception as e:
                 last_exc = e
-                _debug_log(f"String PSM {psm} OEM {oem} lang {lang} failed: {e}")
+                _debug_log(f"String PSM {psm} OEM {oem} lang {lang} failed: {e} cfg={cfg}")
                 continue
         if last_exc:
             _debug_log(f"All string configs failed for lang {lang} psm {psm}: {last_exc}")
