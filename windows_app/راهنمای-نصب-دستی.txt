@@ -1,0 +1,106 @@
+راهنمای نصب دستی - برای شرایط ایران (بدون VPN / با دانلود دستی)
+================================================================
+
+شما گفتید 3 لینک را دستی دانلود کردید. دو حالت وجود دارد:
+
+----------------------------------------------------------------
+حالت 1: فایل نصب Tesseract را دانلود کردید
+----------------------------------------------------------------
+فایل: tesseract-ocr-w64-setup-5.5.0.20241111.exe
+حجم: حدود 45 مگابایت
+لینک: https://github.com/UB-Mannheim/tesseract/releases/download/v5.5.0.20241111/tesseract-ocr-w64-setup-5.5.0.20241111.exe
+
+چیکار کنید:
+1. فایل exe را در همین پوشه windows_app قرار دهید
+   یعنی کنار Install.bat و Install-Tesseract.bat
+
+2. روی Install-Tesseract.bat دابل کلیک کنید
+   - خودش فایل را پیدا می کند و نصب می کند
+   - اگر UAC آمد Yes بزنید
+   - مسیر نصب را تغییر ندهید: C:\Program Files\Tesseract-OCR\
+
+3. یا خودتان دستی روی exe دابل کلیک کنید و نصب کنید
+   - گزینه های Persian و English را تیک بزنید
+   - بعد Check-Installation.bat را اجرا کنید تا [OK] ببینید
+
+4. اگر باز هم برنامه گفت Tesseract پیدا نشد:
+   - برنامه خودش پنجره Browse باز می کند
+   - بروید به C:\Program Files\Tesseract-OCR\tesseract.exe را انتخاب کنید
+
+----------------------------------------------------------------
+حالت 2: 3 مدل PaddleOCR را دانلود کردید (برای موتور دقیق)
+----------------------------------------------------------------
+فایل ها:
+1. Multilingual_PP-OCRv3_det_infer.tar  ~4 MB
+2. arabic_PP-OCRv4_rec_infer.tar        ~10 MB
+3. ch_ppocr_mobile_v2.0_cls_infer.tar   ~2 MB
+
+لینک های گیت هاب (بدون Baidu، در ایران کار می کند):
+https://github.com/saeidkazemi1989-bot/TABDIL-ax-be-matn/releases/download/paddle-models/Multilingual_PP-OCRv3_det_infer.tar
+https://github.com/saeidkazemi1989-bot/TABDIL-ax-be-matn/releases/download/paddle-models/arabic_PP-OCRv4_rec_infer.tar
+https://github.com/saeidkazemi1989-bot/TABDIL-ax-be-matn/releases/download/paddle-models/ch_ppocr_mobile_v2.0_cls_infer.tar
+
+لینک های اصلی Baidu (با VPN):
+https://paddleocr.bj.bcebos.com/PP-OCRv3/multilingual/Multilingual_PP-OCRv3_det_infer.tar
+https://paddleocr.bj.bcebos.com/PP-OCRv4/multilingual/arabic_PP-OCRv4_rec_infer.tar
+https://paddleocr.bj.bcebos.com/dygraph_v2.0/ch/ch_ppocr_mobile_v2.0_cls_infer.tar
+
+چیکار کنید:
+1. یک پوشه به نام paddle_models در همین جا بسازید:
+   windows_app\paddle_models\
+
+2. هر 3 فایل tar را داخل آن پوشه بریزید (نیازی به اکسترکت نیست، ولی اگر اکسترکت کردید هم اشکال ندارد)
+
+   ساختار ساده:
+   windows_app\paddle_models\
+     ├─ Multilingual_PP-OCRv3_det_infer.tar
+     ├─ arabic_PP-OCRv4_rec_infer.tar
+     └─ ch_ppocr_mobile_v2.0_cls_infer.tar
+
+   یا اگر اکسترکت کردید:
+   windows_app\paddle_models\det\ml\Multilingual_PP-OCRv3_det_infer\inference.pdmodel
+   windows_app\paddle_models\rec\arabic\arabic_PP-OCRv4_rec_infer\inference.pdmodel
+   windows_app\paddle_models\cls\ch\ch_ppocr_mobile_v2.0_cls_infer\inference.pdmodel
+
+3. روی Setup-PaddleModels-Local.bat دابل کلیک کنید
+   - خودش tar ها را اکسترکت می کند
+   - به C:\Users\شما\.paddleocr\whl\... کپی می کند
+   - و همچنین در paddle_models نگه می دارد تا برنامه آفلاین پیدا کند
+
+4. بعد Check-Installation.bat را بزنید
+   باید ببینید:
+   [OK] det model ready
+   [OK] rec arabic v4 ready
+   [OK] cls model ready
+   [OK] PaddleOCR import OK
+
+5. حالا Run-TABDIL.bat و موتور دقیق (PaddleOCR) را انتخاب کنید
+
+----------------------------------------------------------------
+حالت 3: فایل نصب Python را دانلود کردید
+----------------------------------------------------------------
+فایل: python-3.11.9-amd64.exe
+لینک: https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe
+
+1. فایل را در همین پوشه قرار دهید
+2. Install.bat را اجرا کنید - خودش پیدا می کند
+3. یا دستی نصب کنید و حتما تیک Add to PATH را بزنید
+
+----------------------------------------------------------------
+تست نهایی با شرایط ایران:
+----------------------------------------------------------------
+ما همه bat ها را برای ایران بهینه کردیم:
+- winget با --source winget (بدون msstore که timeout 12002 می دهد)
+- fallback دانلود مستقیم از GitHub (در ایران باز می شود)
+- پشتیبانی از فایل های لوکال اگر دانلود دستی کردید
+- هیچ پرانتزی داخل echo که باعث بسته شدن آنی شود وجود ندارد
+- همیشه pause در انتها
+
+ترتیب نصب پیشنهادی:
+1. Install.bat (یا Install-Python.bat اگر پایتون ندارید)
+2. Install-Tesseract.bat
+3. Check-Installation.bat (باید همه OK باشد)
+4. Run-TABDIL.bat (موتور سبک Tesseract کار می کند)
+5. اگر موتور دقیق خواستید: Install-PaddleOCR.bat + Download-PaddleModels-GitHub.bat یا Setup-PaddleModels-Local.bat
+
+اگر باز هم مشکل داشتید خروجی Check-Installation.bat را بفرستید.
